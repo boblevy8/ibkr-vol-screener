@@ -153,6 +153,9 @@ class Config:
     with_gap: bool = False  # fetch prior session close to compute gap_pct
     log_file: Path | None = None  # rotating log file path
 
+    # Phase 3: snapshot for replay.
+    save_snapshot_dir: Path | None = None  # explicit root for once/watch
+
     # Outputs.
     csv_path: Path | None = None
     json_path: Path | None = None

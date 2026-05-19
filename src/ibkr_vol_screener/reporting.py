@@ -87,12 +87,22 @@ def rank_rows(
     return sorted(rows, key=lambda r: _sort_value(r, sort_key), reverse=True)[:top_n]
 
 
-def render_table(rows: list[ScreenRow], *, sort_key: str = "range_pct"):
-    """Build a Rich table for the given rows. Returns a `rich.table.Table`."""
+def render_table(
+    rows: list[ScreenRow],
+    *,
+    sort_key: str = "range_pct",
+    alerted_symbols: set[str] | None = None,
+):
+    """Build a Rich table for the given rows. Returns a `rich.table.Table`.
+
+    `alerted_symbols` (optional) — when a row's symbol is in this set, its
+    row is rendered with bold red styling.
+    """
     from rich.table import Table
 
     # Bucket abbreviations to keep columns narrow on small terminals.
     _bucket_abbrev = {"us_major": "US", "tsx": "CA", "otc": "OTC", "uk_eu": "EU"}
+    alerted = alerted_symbols or set()
 
     show_gap = any(r.gap_pct is not None for r in rows)
 
@@ -150,7 +160,8 @@ def render_table(rows: list[ScreenRow], *, sort_key: str = "range_pct"):
                 ",".join(r.source_scan_codes),
             ]
         )
-        t.add_row(*row_cells)
+        style = "bold red" if r.symbol in alerted else None
+        t.add_row(*row_cells, style=style)
     return t
 
 

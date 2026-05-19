@@ -126,9 +126,54 @@ everything including ib_async's internal chatter.
 ibkr-vol-screener once --markets us_major,uk_eu --top-results 30
 ```
 
-UK/EU is opt-in (not in the default 3-bucket set). It uses the broadest
-`STK.EU` location by default; override via `[profile.uk_eu] location_code`
-in the config to target a single country (e.g. `STK.EU.LSE`).
+UK/EU is opt-in (not in the default 3-bucket set). It defaults to
+`STK.EU.LSE` (London — IBKR scanners aren't configured for the broad
+`STK.EU` code); override via `[profile.uk_eu] location_code` in the
+config to target a different venue.
+
+### Save a snapshot for later replay
+
+```bash
+ibkr-vol-screener once --markets us_major --save-snapshot ./out/snap-001
+```
+
+`once` writes `snapshot.json`, `bars/<conId>.json`, and (if `--with-gap`)
+`prior_closes.json` into the directory. `watch` does this **automatically
+every cycle** under `./snapshots/<iso_timestamp>/` — pass
+`--no-save-snapshot` to disable or `--snapshot-dir PATH` to relocate.
+
+### Replay a snapshot (no IBKR connection)
+
+```bash
+ibkr-vol-screener replay ./out/snap-001 --sort atr_pct_60m --top-results 20
+```
+
+Re-runs metrics + filter + rank against the saved bars. Useful for tuning
+sort keys and filter thresholds without burning the 60-req/10-min pacing
+budget. Accepts most of the same `--sort`, `--min-*`, and output flags
+as `once`.
+
+### Threshold alerts in watch mode
+
+```bash
+ibkr-vol-screener watch \
+  --interval 60 \
+  --alert-range-pct 3.0 \
+  --alert-abs-return-pct 2.0 \
+  --alerts-log ./alerts.log
+```
+
+When a row's metric crosses the threshold, its row turns bold red in
+the live table and a structured line is appended to `alerts.log`:
+
+```
+2026-05-19T18:01:32+00:00 SOXS us_major range_pct>=3 value=4.0673
+```
+
+Each breach fires **once** — the symbol re-arms only after dropping
+below 80% of the threshold (hysteresis to avoid spam). Multiple
+`--alert-*` flags can be combined; `--alert-vwap-dev-pct` and
+`--alert-gap-pct` compare the absolute magnitude.
 
 ### Refresh every 60 s with live table
 

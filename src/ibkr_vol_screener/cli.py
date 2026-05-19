@@ -21,6 +21,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.logging import RichHandler
 
+from .alerts import AlertState, build_rules_from_kwargs, write_alerts
 from .config import (
     Config,
     MarketBucket,
@@ -54,6 +55,7 @@ from .scanner_params import (
     write_cached_uk_eu,
 )
 from .scanners import gather_candidates
+from .snapshot import open_for_replay, save_snapshot
 
 # pretty_exceptions_show_locals=False keeps tracebacks tight; the actionable
 # fix hint from ib_client.format_connect_hint is logged at ERROR before raise,
@@ -146,6 +148,7 @@ def _build_config(
     allow_delayed: bool | None = None,
     with_gap: bool | None = None,
     log_file: Path | None = None,
+    save_snapshot_dir: Path | None = None,
 ) -> Config:
     cfg = load_config(config_path) if config_path else Config()
 
@@ -173,6 +176,7 @@ def _build_config(
         allow_delayed=allow_delayed,
         with_gap=with_gap,
         log_file=log_file,
+        save_snapshot_dir=save_snapshot_dir,
     )
 
     # Per-bucket override applied uniformly when the user passes single thresholds.
@@ -361,6 +365,17 @@ async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
                         request_delay_s=cfg.request_delay_s,
                     )
             sub_summary = tracker.summary()
+            if cfg.save_snapshot_dir is not None:
+                try:
+                    save_snapshot(
+                        cfg.save_snapshot_dir,
+                        cfg,
+                        all_candidates,
+                        bar_results,
+                        prior_closes or None,
+                    )
+                except Exception as exc:
+                    log.error("Failed to save snapshot to %s: %s", cfg.save_snapshot_dir, exc)
         finally:
             tracker.detach(ib)
 
@@ -440,6 +455,11 @@ def once(
     log_file: Path | None = typer.Option(
         None, "--log-file", help="Append DEBUG-level rotating log to this path."
     ),
+    save_snapshot_dir: Path | None = typer.Option(
+        None,
+        "--save-snapshot",
+        help="Persist the fetched bars + candidates to PATH for later replay.",
+    ),
 ) -> None:
     """Run one screen across selected markets and print a ranked table."""
     _configure_logging(verbose, log_file)
@@ -465,6 +485,7 @@ def once(
         allow_delayed=allow_delayed,
         with_gap=with_gap,
         log_file=log_file,
+        save_snapshot_dir=save_snapshot_dir,
     )
     if cfg.dry_run:
         import json as _json
@@ -503,6 +524,47 @@ def watch(
     allow_delayed: bool = typer.Option(False, "--allow-delayed"),
     with_gap: bool = typer.Option(False, "--with-gap"),
     log_file: Path | None = typer.Option(None, "--log-file"),
+    snapshot_dir: Path = typer.Option(
+        Path("./snapshots"),
+        "--snapshot-dir",
+        help="Root directory for per-cycle snapshots in watch mode.",
+    ),
+    no_save_snapshot: bool = typer.Option(
+        False,
+        "--no-save-snapshot",
+        help="Disable the default per-cycle snapshot saving.",
+    ),
+    alert_range_pct: float | None = typer.Option(
+        None, "--alert-range-pct", help="Alert when range_pct >= N."
+    ),
+    alert_abs_return_pct: float | None = typer.Option(
+        None, "--alert-abs-return-pct"
+    ),
+    alert_realized_vol: float | None = typer.Option(
+        None, "--alert-realized-vol", help="Alert when realized_vol_60m >= N."
+    ),
+    alert_atr_pct: float | None = typer.Option(
+        None, "--alert-atr-pct", help="Alert when atr_pct_60m >= N."
+    ),
+    alert_volume_60m: float | None = typer.Option(None, "--alert-volume-60m"),
+    alert_dollar_volume_60m: float | None = typer.Option(
+        None, "--alert-dollar-volume-60m"
+    ),
+    alert_vwap_dev_pct: float | None = typer.Option(
+        None,
+        "--alert-vwap-dev-pct",
+        help="Alert when |vwap_dev_pct| >= N (signed magnitude).",
+    ),
+    alert_gap_pct: float | None = typer.Option(
+        None,
+        "--alert-gap-pct",
+        help="Alert when |gap_pct| >= N (signed magnitude; requires --with-gap).",
+    ),
+    alerts_log: Path = typer.Option(
+        Path("./alerts.log"),
+        "--alerts-log",
+        help="Append fired alerts to this file when any --alert-* is set.",
+    ),
 ) -> None:
     """Re-run the screen every --interval seconds with a live-refreshing table."""
     _configure_logging(verbose, log_file)
@@ -530,12 +592,51 @@ def watch(
         log_file=log_file,
     )
 
+    rules = build_rules_from_kwargs(
+        alert_range_pct=alert_range_pct,
+        alert_abs_return_pct=alert_abs_return_pct,
+        alert_realized_vol=alert_realized_vol,
+        alert_atr_pct=alert_atr_pct,
+        alert_volume_60m=alert_volume_60m,
+        alert_dollar_volume_60m=alert_dollar_volume_60m,
+        alert_vwap_dev_pct=alert_vwap_dev_pct,
+        alert_gap_pct=alert_gap_pct,
+    )
+    alert_state = AlertState()
+    if rules:
+        log.info(
+            "Alert rules active: %s; log -> %s",
+            ", ".join(f"{r.metric}>={r.threshold:g}" for r in rules),
+            alerts_log,
+        )
+
     async def loop() -> None:
+        from datetime import datetime as _dt
+
         with Live(console=console, refresh_per_second=2) as live:
             while True:
+                if not no_save_snapshot:
+                    # Per-cycle subdirectory; second-resolution so sub-minute
+                    # intervals don't collide.
+                    stamp = _dt.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
+                    cfg.save_snapshot_dir = snapshot_dir / stamp
+                else:
+                    cfg.save_snapshot_dir = None
                 rows = await _run_once(cfg, show_progress=False)
+                alerted_symbols: set[str] = set()
+                if rows and rules:
+                    fired = alert_state.evaluate(rows, rules)
+                    if fired:
+                        write_alerts(alerts_log, fired)
+                        alerted_symbols = {a.symbol for a in fired}
                 if rows:
-                    live.update(render_table(rows, sort_key=cfg.sort_key))
+                    live.update(
+                        render_table(
+                            rows,
+                            sort_key=cfg.sort_key,
+                            alerted_symbols=alerted_symbols,
+                        )
+                    )
                     _write_outputs(rows, cfg)
                 else:
                     live.update("[yellow]No rows passed filters this cycle.[/yellow]")
@@ -584,6 +685,83 @@ def config_example_cmd() -> None:
     """Print an example TOML configuration."""
     # Bypass Rich's markup parser so [connection] stays literal.
     typer.echo(example_config_toml())
+
+
+@app.command()
+def replay(
+    snapshot_dir: Path = typer.Argument(..., help="Path to a snapshot directory."),
+    markets: str | None = typer.Option(None, "--markets"),
+    top_results: int | None = typer.Option(None, "--top-results"),
+    sort: str | None = typer.Option(None, "--sort"),
+    min_price: float | None = typer.Option(None, "--min-price"),
+    min_volume_60m: float | None = typer.Option(None, "--min-volume-60m"),
+    min_dollar_volume_60m: float | None = typer.Option(None, "--min-dollar-volume-60m"),
+    min_bars_for_metric: int | None = typer.Option(None, "--min-bars"),
+    csv_out: Path | None = typer.Option(None, "--csv"),
+    json_out: Path | None = typer.Option(None, "--json"),
+    html_out: Path | None = typer.Option(None, "--html"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Re-rank a previously saved snapshot without contacting IBKR."""
+    _configure_logging(verbose)
+    inputs = open_for_replay(snapshot_dir)
+    if inputs.captured_at:
+        log.info("Loaded snapshot captured at %s", inputs.captured_at)
+    log.info(
+        "Replaying %d candidates, %d with bars on disk.",
+        len(inputs.candidates),
+        sum(1 for b in inputs.bars_by_conid.values() if b),
+    )
+
+    # Start from defaults, then layer the captured cfg + CLI overrides.
+    cfg = Config()
+    captured_markets = inputs.cfg_dict.get("markets") or []
+    if captured_markets:
+        cfg.markets = tuple(MarketBucket(m) for m in captured_markets)
+    apply_cli_overrides(
+        cfg,
+        markets=_resolve_markets(markets),
+        top_results=top_results,
+        sort_key=sort,
+        csv_path=csv_out,
+        json_path=json_out,
+        html_path=html_out,
+        min_bars_for_metric=min_bars_for_metric,
+        verbose=verbose,
+    )
+    if any(v is not None for v in (min_price, min_volume_60m, min_dollar_volume_60m)):
+        for bucket, prof in cfg.profiles.items():
+            kwargs = {}
+            if min_price is not None:
+                kwargs["min_price"] = min_price
+            if min_volume_60m is not None:
+                kwargs["min_volume_60m"] = min_volume_60m
+            if min_dollar_volume_60m is not None:
+                kwargs["min_dollar_volume_60m"] = min_dollar_volume_60m
+            cfg.profiles[bucket] = replace(prof, **kwargs)
+
+    rows = []
+    for cand in inputs.candidates:
+        bars = inputs.bars_by_conid.get(cand.con_id, [])
+        if not bars:
+            continue
+        row = compute_metrics(
+            cand,
+            bars,
+            min_bars=cfg.min_bars_for_metric,
+            prior_close=inputs.prior_closes.get(cand.con_id),
+        )
+        if row is not None:
+            row.what_to_show = inputs.what_to_show_by_conid.get(cand.con_id, "TRADES")
+            rows.append(row)
+
+    filtered = filter_rows(rows, cfg.profiles)
+    ranked = rank_rows(filtered, sort_key=cfg.sort_key, top_n=cfg.top_results)
+    if not ranked:
+        console.print("[yellow]No rows passed filters.[/yellow]")
+    else:
+        console.print(render_table(ranked, sort_key=cfg.sort_key))
+        _write_outputs(ranked, cfg)
 
 
 def main() -> None:  # pragma: no cover - convenience entrypoint
