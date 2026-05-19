@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ibkr-vol-screener"
+version = "0.1.0"
+description = "Read-only IBKR TWS API screener for the most volatile stocks over the last 60 minutes (US major / TSX / OTC)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "boblevy8" }]
+keywords = ["ibkr", "trading", "screener", "volatility", "tws", "ib-async"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "ib_async>=2.0.1",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+ibkr-vol-screener = "ibkr_vol_screener.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/boblevy8/ibkr-vol-screener"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ibkr_vol_screener"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+# B008: typer.Option(...) in defaults is the idiomatic typer pattern.
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
