@@ -3,6 +3,33 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-05-19
+
+Charts, watchlist, and composable filters.
+
+### Added
+- `chart` command renders matplotlib figures from a saved snapshot
+  (top-K close-price grid) or from a directory of snapshots
+  (`--history` mode: multi-cycle line plot of a chosen metric).
+  Save with `--out chart.png|.svg|.pdf`; optionally `--show` to open
+  in a GUI viewer. Matplotlib is an optional dep —
+  `pip install ibkr-vol-screener[charts]`.
+- `--watchlist PATH` on `once` / `watch` reads a one-symbol-per-line
+  file (comments + blanks ignored), qualifies each symbol via
+  `reqContractDetailsAsync`, and adds them to the candidate pool
+  alongside scanner output (deduped by conId). Config file also
+  supports `watchlist = [...]` or `watchlist_file = "..."`.
+- `--filter EXPR` on `once` / `watch` / `replay` accepts full expressions:
+  parentheses, mixed AND/OR, comparison operators, scientific notation.
+  Example: `--filter '(range_pct>3 AND volume_60m>5e5) OR atr_pct_60m>5'`.
+  Multiple `--filter` flags compose with implicit AND. None-valued
+  attributes (e.g. gap_pct with no --with-gap) evaluate as False.
+- `WATCHLIST` is now a recognized `source_scan_codes` tag so
+  watchlist-only rows still appear in scan-code-predictiveness analytics.
+
+### Changed
+- `pyproject.toml` bumped to `0.3.0`; new `[charts]` extra.
+
 ## [0.2.0] — 2026-05-19
 
 Table UX overhaul + snapshot analytics.

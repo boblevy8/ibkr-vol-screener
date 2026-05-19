@@ -34,6 +34,7 @@ from .analytics import (
     scan_code_predictiveness,
     write_long_form_csv,
 )
+from .charts import MatplotlibMissing, plot_metric_history, plot_snapshot_grid, save_figure
 from .config import (
     Config,
     MarketBucket,
@@ -42,6 +43,7 @@ from .config import (
     example_config_toml,
     load_config,
 )
+from .filter_expr import FilterParseError, compile_filters
 from .historical import fetch_all, fetch_prior_closes
 from .ib_client import ib_session, set_market_data_type
 from .metrics import compute_metrics
@@ -76,6 +78,7 @@ from .scanner_params import (
 )
 from .scanners import gather_candidates
 from .snapshot import open_for_replay, save_snapshot
+from .watchlist import load_watchlist, qualify_watchlist
 
 # pretty_exceptions_show_locals=False keeps tracebacks tight; the actionable
 # fix hint from ib_client.format_connect_hint is logged at ERROR before raise,
@@ -330,6 +333,29 @@ async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
                     max_candidates=cfg.max_candidates_per_market,
                 )
                 all_candidates.extend(cands)
+
+            # Watchlist: add user-supplied symbols (deduped against scanners).
+            wl_symbols: list[str] = list(cfg.watchlist)
+            if cfg.watchlist_file is not None:
+                try:
+                    wl_symbols.extend(load_watchlist(cfg.watchlist_file))
+                except FileNotFoundError as exc:
+                    log.error("Watchlist file not found: %s", exc)
+            if wl_symbols:
+                # Dedupe preserving order.
+                seen: set[str] = set()
+                deduped = [s for s in wl_symbols if not (s in seen or seen.add(s))]
+                extras = await qualify_watchlist(ib, deduped)
+                existing_ids = {c.con_id for c in all_candidates}
+                added = 0
+                for c in extras:
+                    if c.con_id in existing_ids:
+                        continue
+                    all_candidates.append(c)
+                    existing_ids.add(c.con_id)
+                    added += 1
+                log.info("Watchlist contributed %d new candidates", added)
+
             if not all_candidates:
                 log.warning("No candidates from any scanner. Exiting screen with empty result.")
                 return []
@@ -430,6 +456,15 @@ async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
             rows.append(row)
 
     filtered = filter_rows(rows, cfg.profiles)
+    if cfg.filter_exprs:
+        try:
+            pred = compile_filters(list(cfg.filter_exprs))
+        except FilterParseError as exc:
+            log.error("Invalid --filter expression: %s", exc)
+        else:
+            before = len(filtered)
+            filtered = [r for r in filtered if pred(r)]
+            log.info("Composable filter kept %d / %d rows", len(filtered), before)
     ranked = rank_rows(filtered, sort_key=cfg.sort_key, top_n=cfg.top_results)
     if sub_summary:
         console.print(f"[yellow]{sub_summary}[/yellow]")
@@ -505,6 +540,17 @@ def once(
         "--no-progress",
         help="Suppress the live progress widget during historical-bar fetch.",
     ),
+    watchlist_file: Path | None = typer.Option(
+        None,
+        "--watchlist",
+        help="File of symbols (one per line) to add to the candidate pool.",
+    ),
+    filter_exprs: list[str] = typer.Option(
+        [],
+        "--filter",
+        help="Filter expression, e.g. 'range_pct>3 AND volume_60m>500000'. "
+        "Pass multiple times to AND-combine.",
+    ),
 ) -> None:
     """Run one screen across selected markets and print a ranked table."""
     global console
@@ -536,6 +582,10 @@ def once(
         log_file=log_file,
         save_snapshot_dir=save_snapshot_dir,
     )
+    if watchlist_file is not None:
+        cfg.watchlist_file = watchlist_file
+    if filter_exprs:
+        cfg.filter_exprs = tuple(filter_exprs)
     if cfg.dry_run:
         import json as _json
 
@@ -616,6 +666,14 @@ def watch(
         "--alerts-log",
         help="Append fired alerts to this file when any --alert-* is set.",
     ),
+    watchlist_file: Path | None = typer.Option(
+        None,
+        "--watchlist",
+        help="File of symbols (one per line) to add to the candidate pool.",
+    ),
+    filter_exprs: list[str] = typer.Option(
+        [], "--filter", help="Composable filter expression (AND-combined)."
+    ),
 ) -> None:
     """Re-run the screen every --interval seconds with a live-refreshing table."""
     _configure_logging(verbose, log_file)
@@ -642,6 +700,10 @@ def watch(
         with_gap=with_gap,
         log_file=log_file,
     )
+    if watchlist_file is not None:
+        cfg.watchlist_file = watchlist_file
+    if filter_exprs:
+        cfg.filter_exprs = tuple(filter_exprs)
 
     rules = build_rules_from_kwargs(
         alert_range_pct=alert_range_pct,
@@ -754,6 +816,9 @@ def replay(
     html_out: Path | None = typer.Option(None, "--html"),
     verbose: bool = typer.Option(False, "--verbose"),
     width: int | None = typer.Option(None, "--width"),
+    filter_exprs: list[str] = typer.Option(
+        [], "--filter", help="Composable filter expression (AND-combined)."
+    ),
 ) -> None:
     """Re-rank a previously saved snapshot without contacting IBKR."""
     global console
@@ -813,6 +878,12 @@ def replay(
             rows.append(row)
 
     filtered = filter_rows(rows, cfg.profiles)
+    if filter_exprs:
+        try:
+            pred = compile_filters(list(filter_exprs))
+        except FilterParseError as exc:
+            raise typer.BadParameter(str(exc)) from None
+        filtered = [r for r in filtered if pred(r)]
     ranked = rank_rows(filtered, sort_key=cfg.sort_key, top_n=cfg.top_results)
     if not ranked:
         console.print("[yellow]No rows passed filters.[/yellow]")
@@ -885,6 +956,72 @@ def analyze(
 
     if csv_out:
         write_long_form_csv(history, csv_out)
+
+
+@app.command()
+def chart(
+    path: Path = typer.Argument(
+        ...,
+        help="Snapshot directory (default) or snapshots root (with --history).",
+    ),
+    history: bool = typer.Option(
+        False,
+        "--history",
+        help="Treat `path` as a snapshots root; render a multi-cycle metric history.",
+    ),
+    top_k: int = typer.Option(8, "--top-k"),
+    metric: str = typer.Option(
+        "range_pct",
+        "--metric",
+        help="Metric to plot in --history mode.",
+    ),
+    sort: str = typer.Option(
+        "range_pct",
+        "--sort",
+        help="Ranking key (top-K by this in both modes).",
+    ),
+    out: Path | None = typer.Option(
+        None, "--out", help="Output file path (.png, .svg, .pdf). Default: ./chart.png"
+    ),
+    show: bool = typer.Option(
+        False, "--show", help="Also open the chart in a GUI viewer."
+    ),
+    dpi: int = typer.Option(110, "--dpi"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Render a matplotlib chart from a snapshot (or snapshots history).
+
+    Requires the `charts` extra: `pip install ibkr-vol-screener[charts]`.
+    """
+    if sort not in _VALID_SORT_KEYS:
+        raise typer.BadParameter(
+            f"--sort must be one of {', '.join(_VALID_SORT_KEYS)} (got {sort!r})"
+        )
+    if metric not in _VALID_SORT_KEYS:
+        raise typer.BadParameter(
+            f"--metric must be one of {', '.join(_VALID_SORT_KEYS)} (got {metric!r})"
+        )
+    _configure_logging(verbose)
+    try:
+        if history:
+            fig = plot_metric_history(path, top_k=top_k, metric=metric, sort_key=sort)
+        else:
+            fig = plot_snapshot_grid(path, top_k=top_k, sort_key=sort)
+    except MatplotlibMissing as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+
+    out_path = out or Path("chart.png")
+    save_figure(fig, out_path, dpi=dpi)
+    console.print(f"[green]Chart written -> {out_path}[/green]")
+    if show:
+        try:
+            import matplotlib
+            matplotlib.use("TkAgg", force=True)
+            import matplotlib.pyplot as plt
+            plt.show()
+        except Exception as exc:
+            log.warning("Could not open interactive viewer: %s", exc)
 
 
 def main() -> None:  # pragma: no cover - convenience entrypoint

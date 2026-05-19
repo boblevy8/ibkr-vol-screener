@@ -156,6 +156,11 @@ class Config:
     # Phase 3: snapshot for replay.
     save_snapshot_dir: Path | None = None  # explicit root for once/watch
 
+    # Phase 5: watchlist + composable filters.
+    watchlist: tuple[str, ...] = ()  # explicit symbol list (e.g. from CLI)
+    watchlist_file: Path | None = None  # alternative: path to a file
+    filter_exprs: tuple[str, ...] = ()  # raw --filter expressions (AND-combined)
+
     # Outputs.
     csv_path: Path | None = None
     json_path: Path | None = None
@@ -229,6 +234,10 @@ def load_config(path: Path | None = None) -> Config:
     for k in ("sort_key", "what_to_show", "bar_size"):
         if k in screen:
             setattr(cfg, k, str(screen[k]))
+    if "watchlist" in screen:
+        cfg.watchlist = tuple(str(s).upper() for s in screen["watchlist"])
+    if "watchlist_file" in screen:
+        cfg.watchlist_file = Path(str(screen["watchlist_file"]))
 
     # Optional per-market profile overrides.
     for bucket in MarketBucket:

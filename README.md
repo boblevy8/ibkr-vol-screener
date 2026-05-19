@@ -180,6 +180,60 @@ ibkr-vol-screener once --no-progress --width 200 > screen.txt
 `--no-progress` skips the live spinner during the historical-bar
 fetch. The INFO log lines remain so the run is still observable.
 
+### Watchlist: track your own symbols alongside scanners
+
+Create a file with one symbol per line (`#` comments and blank lines
+are ignored), then point `once` or `watch` at it:
+
+```
+# my-tickers.txt
+AAPL
+MSFT
+NVDA
+TSLA
+```
+
+```bash
+ibkr-vol-screener once --watchlist ./my-tickers.txt --markets us_major
+```
+
+Watchlist symbols are qualified via `reqContractDetails` and added
+to the candidate pool deduped against scanner output. They get
+`source_scan_codes={"WATCHLIST"}` so the analytics churn / scan-code
+predictiveness tables can tell them apart.
+
+### Composable filter expressions
+
+```bash
+ibkr-vol-screener once \
+  --filter '(range_pct>3 AND volume_60m>5e5) OR atr_pct_60m>5'
+```
+
+Grammar: parens + `AND`/`OR` (case-insensitive) + comparisons
+(`>`, `>=`, `<`, `<=`, `==`, `!=`). Multiple `--filter` flags
+combine with implicit AND. Allowed metric names match `--sort`'s
+plus `first_open`, `last_close`, `high_60m`, `low_60m`, `n_bars`.
+None-valued attributes (`gap_pct` without `--with-gap`) evaluate
+as False, never crash.
+
+### Render a chart of a saved snapshot
+
+```bash
+# Install matplotlib extra once
+pip install ibkr-vol-screener[charts]
+
+# Single snapshot -> grid of 60m close-price line plots
+ibkr-vol-screener chart ./snapshots/2026-05-19T15-30-00 \
+    --top-k 8 --out ./out/chart.png
+
+# All cycles in a snapshots root -> multi-line metric history
+ibkr-vol-screener chart ./snapshots --history \
+    --metric range_pct --top-k 6 --out ./out/history.svg
+```
+
+Pass `--show` to also open the figure in a GUI viewer (Tk on most
+Windows installs).
+
 ### Analyze accumulated watch history
 
 ```bash
