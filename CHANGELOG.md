@@ -3,6 +3,38 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-05-19
+
+Table UX overhaul + snapshot analytics.
+
+### Added
+- Inline `60m` sparkline column showing the shape of the last 60
+  minutes of closes (unicode block characters in the live table, raw
+  arrays in JSON, an inline `<svg>` polyline in HTML, and both an
+  inline sparkline string + comma-separated closes in CSV).
+- Responsive column dropping in `render_table`: at narrow terminal
+  widths the low-priority columns (Scans, $Vol60, RVol%, VWdev%) are
+  hidden so the surviving columns fit without truncation. Priority
+  thresholds: P1 at width ≥ 100, P2 at ≥ 120, P3 at ≥ 140, P4 at ≥ 160.
+- `--width N` flag on `once`, `watch`, `replay`, and `analyze` to force
+  a specific console width (also honored via the
+  `IBKR_VOL_SCREENER_WIDTH` env var).
+- `--no-progress` flag on `once` to suppress the live progress widget
+  during the historical-bar phase (watch already suppresses it).
+- New `analyze <snapshots-dir>` command. Walks all snapshot
+  subdirectories, recomputes metrics, and renders:
+  1. Run overview (cycles, time span, unique symbols)
+  2. Top-K churn (symbols by # appearances in the top-K of `--sort`)
+  3. Persistent-symbols time series with per-symbol sparklines of the
+     selected metric
+  4. Scan-code predictiveness (mean of `--metric` per source scan code)
+  `--csv out.csv` exports long-form `(ts, symbol, bucket, metric, value)`.
+- `ScreenRow.closes_60m: tuple[float, ...]` populated by
+  `compute_metrics` (sequence of 1-min closes within the window).
+
+### Changed
+- `pyproject.toml` and `__init__.__version__` bumped to `0.2.0`.
+
 ## [0.1.0] — 2026-05-19
 
 Initial release. Read-only IBKR TWS API screener for the most volatile

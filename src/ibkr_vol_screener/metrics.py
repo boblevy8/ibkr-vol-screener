@@ -60,6 +60,9 @@ class ScreenRow:
     atr_pct_60m: float = 0.0
     # gap_pct is None unless the caller supplied prior_close (gated by --with-gap).
     gap_pct: float | None = None
+    # Sequence of closes within the 60m window — used to render the sparkline
+    # column and to plot the price shape in CSV/JSON/HTML exports.
+    closes_60m: tuple[float, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -212,4 +215,5 @@ def compute_metrics(
         vwap_dev_pct=vwap_dev_pct,
         atr_pct_60m=atr_pct_60m,
         gap_pct=gap_pct,
+        closes_60m=tuple(closes),
     )

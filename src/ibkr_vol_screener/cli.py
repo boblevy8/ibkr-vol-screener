@@ -22,6 +22,18 @@ from rich.live import Live
 from rich.logging import RichHandler
 
 from .alerts import AlertState, build_rules_from_kwargs, write_alerts
+from .analytics import (
+    compute_top_k_churn,
+    load_history,
+    overview,
+    per_symbol_series,
+    render_churn_table,
+    render_overview_table,
+    render_persistent_series_table,
+    render_scan_predictiveness_table,
+    scan_code_predictiveness,
+    write_long_form_csv,
+)
 from .config import (
     Config,
     MarketBucket,
@@ -38,7 +50,15 @@ from .observability import (
     configure_file_logging,
     is_scanner_cancel_receipt,
 )
-from .reporting import filter_rows, rank_rows, render_table, write_csv, write_html, write_json
+from .reporting import (
+    _VALID_SORT_KEYS,
+    filter_rows,
+    rank_rows,
+    render_table,
+    write_csv,
+    write_html,
+    write_json,
+)
 from .scanner_params import (
     cached_tsx_location_path,
     discover_tsx_location,
@@ -67,7 +87,7 @@ app = typer.Typer(
 )
 
 
-def _make_console() -> Console:
+def _make_console(width: int | None = None) -> Console:
     # Defensive on Windows legacy consoles (cp1252): force UTF-8 if available,
     # otherwise let Rich downgrade.
     import sys as _sys
@@ -78,7 +98,22 @@ def _make_console() -> Console:
             reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
-    return Console()
+    return Console(width=width) if width is not None else Console()
+
+
+def _resolve_width(cli_value: int | None) -> int | None:
+    """CLI flag wins; otherwise honor IBKR_VOL_SCREENER_WIDTH env."""
+    import os as _os
+
+    if cli_value is not None:
+        return cli_value
+    env_val = _os.environ.get("IBKR_VOL_SCREENER_WIDTH")
+    if env_val:
+        try:
+            return int(env_val)
+        except ValueError:
+            return None
+    return None
 
 
 console = _make_console()
@@ -460,8 +495,22 @@ def once(
         "--save-snapshot",
         help="Persist the fetched bars + candidates to PATH for later replay.",
     ),
+    width: int | None = typer.Option(
+        None,
+        "--width",
+        help="Force console width (overrides terminal autodetect).",
+    ),
+    no_progress: bool = typer.Option(
+        False,
+        "--no-progress",
+        help="Suppress the live progress widget during historical-bar fetch.",
+    ),
 ) -> None:
     """Run one screen across selected markets and print a ranked table."""
+    global console
+    resolved_width = _resolve_width(width)
+    if resolved_width is not None:
+        console = _make_console(resolved_width)
     _configure_logging(verbose, log_file)
     cfg = _build_config(
         config_path=config,
@@ -493,11 +542,13 @@ def once(
         console.print("[bold yellow]--dry-run: resolved config:[/bold yellow]")
         console.print_json(_json.dumps(config_summary(cfg), default=str))
         return
-    rows = asyncio.run(_run_once(cfg))
+    rows = asyncio.run(_run_once(cfg, show_progress=not no_progress))
     if not rows:
         console.print("[yellow]No rows passed filters.[/yellow]")
     else:
-        console.print(render_table(rows, sort_key=cfg.sort_key))
+        console.print(
+            render_table(rows, sort_key=cfg.sort_key, console_width=console.size.width)
+        )
         _write_outputs(rows, cfg)
 
 
@@ -635,6 +686,7 @@ def watch(
                             rows,
                             sort_key=cfg.sort_key,
                             alerted_symbols=alerted_symbols,
+                            console_width=console.size.width,
                         )
                     )
                     _write_outputs(rows, cfg)
@@ -701,8 +753,13 @@ def replay(
     json_out: Path | None = typer.Option(None, "--json"),
     html_out: Path | None = typer.Option(None, "--html"),
     verbose: bool = typer.Option(False, "--verbose"),
+    width: int | None = typer.Option(None, "--width"),
 ) -> None:
     """Re-rank a previously saved snapshot without contacting IBKR."""
+    global console
+    resolved_width = _resolve_width(width)
+    if resolved_width is not None:
+        console = _make_console(resolved_width)
     _configure_logging(verbose)
     inputs = open_for_replay(snapshot_dir)
     if inputs.captured_at:
@@ -760,8 +817,74 @@ def replay(
     if not ranked:
         console.print("[yellow]No rows passed filters.[/yellow]")
     else:
-        console.print(render_table(ranked, sort_key=cfg.sort_key))
+        console.print(
+            render_table(ranked, sort_key=cfg.sort_key, console_width=console.size.width)
+        )
         _write_outputs(ranked, cfg)
+
+
+@app.command()
+def analyze(
+    root: Path = typer.Argument(
+        ..., help="Snapshots root (e.g. ./snapshots)."
+    ),
+    sort: str = typer.Option(
+        "range_pct",
+        "--sort",
+        help=f"Ranking key for top-K churn. One of: {', '.join(_VALID_SORT_KEYS)}.",
+    ),
+    top_k: int = typer.Option(10, "--top-k"),
+    metric: str = typer.Option(
+        "range_pct",
+        "--metric",
+        help="Metric to summarize in the persistent-symbols + scan-code tables.",
+    ),
+    min_fraction: float = typer.Option(
+        0.25,
+        "--min-fraction",
+        help="Minimum fraction of cycles a symbol must appear in for the "
+        "persistent-symbols table (0..1).",
+    ),
+    csv_out: Path | None = typer.Option(None, "--csv"),
+    width: int | None = typer.Option(None, "--width"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Analyze a directory of saved snapshots (no IBKR connection)."""
+    if sort not in _VALID_SORT_KEYS:
+        raise typer.BadParameter(
+            f"--sort must be one of {', '.join(_VALID_SORT_KEYS)} (got {sort!r})"
+        )
+    if metric not in _VALID_SORT_KEYS:
+        raise typer.BadParameter(
+            f"--metric must be one of {', '.join(_VALID_SORT_KEYS)} (got {metric!r})"
+        )
+    global console
+    resolved_width = _resolve_width(width)
+    if resolved_width is not None:
+        console = _make_console(resolved_width)
+    _configure_logging(verbose)
+
+    history = load_history(root)
+    if not history:
+        console.print(f"[yellow]No snapshots found under {root}[/yellow]")
+        return
+
+    ov = overview(history)
+    churn = compute_top_k_churn(history, k=top_k, sort_key=sort)
+    series = per_symbol_series(history)
+    pred = scan_code_predictiveness(history, metric=metric)
+
+    console.print(render_overview_table(ov))
+    console.print(render_churn_table(churn))
+    console.print(
+        render_persistent_series_table(
+            series, cycles=ov.cycles, metric=metric, min_fraction=min_fraction
+        )
+    )
+    console.print(render_scan_predictiveness_table(pred))
+
+    if csv_out:
+        write_long_form_csv(history, csv_out)
 
 
 def main() -> None:  # pragma: no cover - convenience entrypoint

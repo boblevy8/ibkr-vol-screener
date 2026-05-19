@@ -153,6 +153,59 @@ sort keys and filter thresholds without burning the 60-req/10-min pacing
 budget. Accepts most of the same `--sort`, `--min-*`, and output flags
 as `once`.
 
+### Narrow terminals
+
+The Rich table auto-resizes for your terminal: low-priority columns
+drop out as width shrinks. Priorities (P0 always shown, P4 last to
+drop):
+
+| Width | Columns shown |
+| --- | --- |
+| any | `#`, `Sym`, `Bkt`, `Px`, `Range%`, `Sgn%`, `60m` (sparkline), `Bars` |
+| ≥ 100 | + `|d|%`, `ATR%` |
+| ≥ 120 | + `RVol%`, `VWdev%` |
+| ≥ 140 | + `Vol60`, `$Vol60`, `Gap%` (when present) |
+| ≥ 160 | + `Scans` |
+
+Force a specific width with `--width N` (also `IBKR_VOL_SCREENER_WIDTH`
+env var) — useful for piping to a file or CI logs that want the full
+table regardless of terminal size.
+
+### Quieter output for logs / CI
+
+```bash
+ibkr-vol-screener once --no-progress --width 200 > screen.txt
+```
+
+`--no-progress` skips the live spinner during the historical-bar
+fetch. The INFO log lines remain so the run is still observable.
+
+### Analyze accumulated watch history
+
+```bash
+ibkr-vol-screener analyze ./snapshots/ \
+  --sort range_pct \
+  --top-k 10 \
+  --metric atr_pct_60m \
+  --csv ./out/history.csv
+```
+
+Walks every snapshot directory under the given root (these are written
+by `watch` automatically) and prints four tables:
+
+1. **Run overview** — cycles found, time span, unique symbols seen.
+2. **Top-K churn** — which symbols keep appearing in the top-K by
+   `--sort` and what fraction of cycles they show up in.
+3. **Persistent symbols** — for symbols seen in ≥ 25% of cycles, the
+   min/median/max of `--metric` plus a sparkline of that metric over
+   time.
+4. **Scan-code predictiveness** — mean of `--metric` per IBKR scan code
+   (HOT_BY_VOLUME, TOP_PERC_GAIN, …). Tells you whether the IBKR
+   scanner is actually surfacing names that turn out to be volatile.
+
+`--csv out.csv` exports a long-form `(ts, symbol, bucket, metric,
+value)` file for further analysis in a spreadsheet or notebook.
+
 ### Threshold alerts in watch mode
 
 ```bash
