@@ -1,0 +1,91 @@
+<?xml version="1.0"?>
+<ScanParameterResponse>
+  <LocationTree>
+    <Location>
+      <locationCode>STK.US.MAJOR</locationCode>
+      <displayName>US Major</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.US.MINOR</locationCode>
+      <displayName>US Minor (OTC / Pink)</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.NA.CANADA</locationCode>
+      <displayName>Canada (TSX + TSX Venture)</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.EU</locationCode>
+      <displayName>Europe Stocks</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.EU.LSE</locationCode>
+      <displayName>United Kingdom (LSE)</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.EU.IBIS</locationCode>
+      <displayName>Germany</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </Location>
+    <Location>
+      <locationCode>FUT.US</locationCode>
+      <displayName>US Futures</displayName>
+      <Instruments>
+        <Instrument>FUT</Instrument>
+      </Instruments>
+    </Location>
+  </LocationTree>
+  <ScanTypeList>
+    <ScanType>
+      <scanCode>HOT_BY_VOLUME</scanCode>
+      <displayName>Hot Contracts by Volume</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </ScanType>
+    <ScanType>
+      <scanCode>TOP_PERC_GAIN</scanCode>
+      <displayName>Top % Gainers</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </ScanType>
+    <ScanType>
+      <scanCode>TOP_PERC_LOSE</scanCode>
+      <displayName>Top % Losers</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </ScanType>
+    <ScanType>
+      <scanCode>MOST_ACTIVE</scanCode>
+      <displayName>Most Active</displayName>
+      <Instruments>
+        <Instrument>STK</Instrument>
+      </Instruments>
+    </ScanType>
+    <ScanType>
+      <scanCode>SOME_FUTURES_ONLY_CODE</scanCode>
+      <displayName>Futures only</displayName>
+      <Instruments>
+        <Instrument>FUT</Instrument>
+      </Instruments>
+    </ScanType>
+  </ScanTypeList>
+</ScanParameterResponse>

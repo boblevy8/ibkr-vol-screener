@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<ScanParameterResponse>
+  <LocationTree>
+    <Location>
+      <locationCode>STK.US.MAJOR</locationCode>
+      <displayName>US Major</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.US.MINOR</locationCode>
+      <displayName>US Minor</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </Location>
+  </LocationTree>
+  <ScanTypeList>
+    <ScanType>
+      <scanCode>HOT_BY_VOLUME</scanCode>
+      <displayName>Hot by Volume</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </ScanType>
+  </ScanTypeList>
+</ScanParameterResponse>

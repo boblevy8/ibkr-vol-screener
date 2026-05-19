@@ -1,0 +1,231 @@
+# ibkr-vol-screener
+
+A **read-only** Python CLI that uses the Interactive Brokers TWS API to surface
+the most volatile stocks over the **last 60 minutes** across four universes:
+
+1. **US major** — listed on NYSE / NASDAQ / AMEX / ARCA (`STK.US.MAJOR`)
+2. **Canada / TSX** — `STK.NA.CANADA` (auto-discovered; falls back to `STK.NA.TSE` / `STK.NA.VENTURE`)
+3. **US OTC / Pink Sheets** (`STK.US.MINOR`)
+4. **UK / EU** (opt-in via `--markets uk_eu`) — `STK.EU` catch-all by default
+
+The tool combines IBKR market scanners (used as a candidate generator) with
+freshly fetched 1-minute historical bars to compute a true rolling 60-minute
+realized volatility, intraday range, and signed return — then ranks the
+universe by your chosen metric.
+
+> **Read-only by construction.** This package never imports or invokes any
+> order-placement, modification, cancellation, or account/position endpoint.
+> See `tests/test_readonly.py` for the AST-level invariant check, and enable
+> the **"Read-Only API"** checkbox in TWS as defense in depth.
+
+## Install
+
+```bash
+# Option A: pip
+pip install -e .[dev]
+
+# Option B: uv
+uv sync
+```
+
+Python ≥ 3.11 required.
+
+## TWS / IB Gateway setup
+
+1. Install **Trader Workstation** (TWS) or **IB Gateway** from
+   <https://www.interactivebrokers.com/en/trading/tws.php>.
+2. Use **paper trading first**. Sign into the paper account from the launcher.
+3. Open **File → Global Configuration → API → Settings** and:
+   - Tick **"Enable ActiveX and Socket Clients"**.
+   - Tick **"Read-Only API"** (strongly recommended).
+   - Confirm the **Socket port** matches what you pass to the CLI:
+     - Paper TWS → `7497` (default here)
+     - Live TWS → `7496`
+     - Paper IB Gateway → `4002`
+     - Live IB Gateway → `4001`
+   - Add `127.0.0.1` to **Trusted IPs**.
+4. Keep TWS / Gateway open and logged in while you run the screener.
+
+## Market data subscriptions — caveats
+
+You need the right subscriptions for historical TRADES bars in each market:
+
+- **US listed + OTC top-of-book** — *US Securities Snapshot and Futures Value Bundle* (free for active traders).
+- **TSX / TSX Venture** — separate Canadian subscription.
+- **OTC Global Equities (ARCAEDGE)** — required for OTC trade bars. Without
+  it, the screener auto-falls-back to `MIDPOINT` bars for OTC names.
+
+Scanner rankings often work without subs; historical TRADES may not. If you
+only have delayed data, pass `--allow-delayed` to switch to 15-min delayed
+streaming quotes (this still works for many historical requests).
+
+## Usage
+
+### Show the help
+
+```bash
+ibkr-vol-screener --help
+```
+
+### One-off screen across all three markets
+
+```bash
+ibkr-vol-screener once --top-results 30
+```
+
+### US-major only, top 20 by range
+
+```bash
+ibkr-vol-screener once --markets us_major --top-results 20
+```
+
+### OTC only with stricter filters and CSV export
+
+```bash
+ibkr-vol-screener once \
+  --markets otc \
+  --min-price 0.50 \
+  --min-volume-60m 500000 \
+  --min-dollar-volume-60m 250000 \
+  --csv ./out/otc_60m.csv
+```
+
+### Sort by absolute return instead of range
+
+```bash
+ibkr-vol-screener once --sort abs_return_pct
+```
+
+Other valid `--sort` keys: `range_pct` (default), `abs_return_pct`,
+`volume_60m`, `dollar_volume_60m`, `realized_vol_60m`, `atr_pct_60m`,
+`vwap_dev_pct` (signed, sorted by magnitude), `gap_pct` (requires `--with-gap`).
+
+### Add gap-from-prior-close (one extra request per name)
+
+```bash
+ibkr-vol-screener once --markets us_major --with-gap --sort gap_pct
+```
+
+`--with-gap` issues an additional daily-bar request per candidate to pull the
+previous session's close and report `gap_pct`. This roughly doubles the
+pacing cost, so it's off by default.
+
+### Add a rotating debug log
+
+```bash
+ibkr-vol-screener once --log-file ./run.log --verbose
+```
+
+`--log-file` attaches a `RotatingFileHandler` (10 MB × 5 backups) at DEBUG
+level. The console still shows the INFO summary, but the file captures
+everything including ib_async's internal chatter.
+
+### Include the UK / EU bucket
+
+```bash
+ibkr-vol-screener once --markets us_major,uk_eu --top-results 30
+```
+
+UK/EU is opt-in (not in the default 3-bucket set). It uses the broadest
+`STK.EU` location by default; override via `[profile.uk_eu] location_code`
+in the config to target a single country (e.g. `STK.EU.LSE`).
+
+### Refresh every 60 s with live table
+
+```bash
+ibkr-vol-screener watch --interval 60 --markets us_major,tsx,otc
+```
+
+### Discover scanner locations / scan codes (helpful for TSX)
+
+```bash
+ibkr-vol-screener scanner-params
+```
+
+This downloads + caches the scanner XML and prints all `STK.*` location
+codes and `<ScanType>` codes available to your account. Useful to find
+the exact Canada/TSX location string for your region.
+
+### Print an example config
+
+```bash
+ibkr-vol-screener config-example > screener.toml
+ibkr-vol-screener once --config screener.toml
+```
+
+## How the volatility metric works
+
+For each candidate, the screener pulls a 90-minute buffer of 1-minute bars
+and slices to the last 60 minutes. From that window it computes:
+
+| Field | Definition |
+| --- | --- |
+| `range_pct` | `(high_60m - low_60m) / last_close * 100` — intraday high-low range as a percent of the latest close |
+| `signed_return_pct` | `(last_close - first_open) / first_open * 100` |
+| `abs_return_pct` | `\|signed_return_pct\|` |
+| `realized_vol_60m` | annualized stdev of 1-min log returns, in % |
+| `atr_pct_60m` | mean true-range over 1-min bars (incl. close-to-close gaps) as % of `last_close` |
+| `vwap_60m`, `vwap_dev_pct` | volume-weighted average price over the window (typical-price basis); `vwap_dev_pct` is `(last_close - vwap) / vwap * 100` |
+| `gap_pct` | `(first_open_60m - prior_close) / prior_close * 100`; only populated when `--with-gap` was passed |
+| `volume_60m`, `dollar_volume_60m` | sums over the 60-minute window (UK/EU values are in local currency, no FX conversion) |
+
+`range_pct` is the **default sort key** — it captures *intra-window
+swing* even when the net move is small.
+
+## Scanner results are candidates, not the answer
+
+IBKR's `HOT_BY_VOLUME`, `TOP_PERC_GAIN`, etc. rank on full-session or
+open-relative metrics, not on rolling 60-minute volatility. The screener
+uses them only to surface a plausible candidate pool. The **true ranking is
+re-computed** from the 1-minute bars over the last 60 minutes.
+
+## Troubleshooting
+
+- **Cannot connect to TWS** — confirm TWS / Gateway is logged in, API
+  settings enabled, port matches, and `127.0.0.1` is in the Trusted IP list.
+  Try a different `--client-id` if another script is already connected with
+  the same ID.
+- **Invalid scanner location** — run
+  `ibkr-vol-screener scanner-params --refresh` and copy the exact code
+  into `[profile.<bucket>] location_code = "..."` in your config.
+- **No TSX location found** — set `[profile.tsx] location_code` explicitly
+  in the config (see `config-example`).
+- **UK/EU scanner returns 0 candidates / "Market Scanner is not configured
+  for one of the chosen locations"** — IBKR error 365. The account doesn't
+  have EU scanner subscriptions. This is common on paper accounts. Either
+  subscribe to the relevant European data feed in IBKR Client Portal, or
+  drop `uk_eu` from `--markets`. The screener exits the bucket gracefully
+  with `0 unique candidates` and continues with the other markets.
+- **Market data not subscribed** — historical TRADES will be empty or
+  error 165. Either subscribe, drop the affected market, or use
+  `--allow-delayed`.
+- **Historical pacing violation (error 162)** — the screener retries with
+  exponential backoff. To prevent it, lower `--top-candidates-per-scan` or
+  reduce `concurrency` / increase `request_delay_s` in the config.
+- **No bars returned** — for OTC the tool auto-retries with
+  `whatToShow=MIDPOINT`. For other markets, check that TWS is logged in to
+  the right account (paper vs live) and that the market is open or
+  recently closed.
+- **Delayed vs real-time data** — `--allow-delayed` switches to 15-min
+  delayed mode. The most recent ~15 minutes of bars may be missing; older
+  bars usually work.
+
+## Development
+
+```bash
+# install dev deps
+pip install -e .[dev]
+
+# format + lint
+ruff format src tests
+ruff check src tests
+
+# tests (no IBKR required)
+pytest -q
+
+# integration smoke test (needs TWS at 127.0.0.1:7497)
+IBKR_LIVE_TEST=1 pytest tests/test_live.py
+```
+
+See `docs/research_notes.md` for the IBKR API specifics this code relies on,
+and `tests/test_readonly.py` for the read-only invariant check.
