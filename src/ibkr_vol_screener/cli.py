@@ -83,6 +83,7 @@ from .scanner_params import (
 )
 from .scanners import gather_candidates
 from .snapshot import open_for_replay, save_snapshot
+from .streaming import StreamingSession
 from .watchlist import load_watchlist, qualify_watchlist
 
 # pretty_exceptions_show_locals=False keeps tracebacks tight; the actionable
@@ -638,6 +639,191 @@ def once(
         _write_outputs(rows, cfg)
 
 
+def _emit_cycle(live, rows, cfg, rules, alert_state, alerts_log) -> None:
+    """Shared post-metrics rendering: alerts -> render -> outputs."""
+    alerted_symbols: set[str] = set()
+    if rows and rules:
+        fired = alert_state.evaluate(rows, rules)
+        if fired:
+            write_alerts(alerts_log, fired)
+            alerted_symbols = {a.symbol for a in fired}
+    if rows:
+        live.update(
+            render_table(
+                rows,
+                sort_key=cfg.sort_key,
+                alerted_symbols=alerted_symbols,
+                console_width=console.size.width,
+            )
+        )
+        _write_outputs(rows, cfg)
+    else:
+        live.update("[yellow]No rows passed filters this cycle.[/yellow]")
+
+
+async def _run_watch_streaming(
+    cfg: Config,
+    *,
+    interval: float,
+    snapshot_dir: Path,
+    no_save_snapshot: bool,
+    rules: list,
+    alert_state,
+    alerts_log: Path,
+) -> None:
+    """Watch loop powered by a persistent StreamingSession.
+
+    Holds one IB connection open for the whole run. Per-cycle work:
+      1. Refresh scanner XML (cached). Re-scan markets. Add watchlist.
+      2. sync_candidate_pool(): subscribe new candidates, unsubscribe
+         dropouts (each new subscription bootstraps via reqHistoricalData).
+      3. For each active conId: get_bars() from the rolling buffer,
+         compute_metrics, filter, rank.
+      4. Save snapshot (from buffer), evaluate alerts, render.
+    """
+    from datetime import datetime as _dt
+
+    async with ib_session(cfg.host, cfg.port, cfg.client_id) as ib:
+        if cfg.allow_delayed or cfg.market_data_type != 1:
+            set_market_data_type(ib, 3 if cfg.allow_delayed else cfg.market_data_type)
+
+        tracker = SubscriptionErrorTracker.attach(ib)
+        session = StreamingSession(
+            ib, max_subscriptions=cfg.streaming_max_subscriptions
+        )
+        log.info(
+            "Streaming watch loop starting (max_subs=%d, backfill=%ds, interval=%.0fs)",
+            cfg.streaming_max_subscriptions,
+            cfg.streaming_backfill_seconds,
+            interval,
+        )
+
+        try:
+            with Live(console=console, refresh_per_second=2) as live:
+                while True:
+                    # 1) Scanner XML + candidate generation.
+                    xml = await _ensure_scanner_xml(ib, cfg)
+                    # Resolve TSX / UK-EU / HK if needed (mutates cfg in-place).
+                    if MarketBucket.TSX in cfg.markets:
+                        tsx_loc = await _resolve_tsx_location(ib, cfg, xml)
+                        if tsx_loc is None:
+                            cfg.markets = tuple(m for m in cfg.markets if m is not MarketBucket.TSX)
+                        else:
+                            prof = cfg.profiles[MarketBucket.TSX]
+                            cfg.profiles[MarketBucket.TSX] = replace(prof, location_code=tsx_loc)
+                    if MarketBucket.UK_EU in cfg.markets:
+                        eu_loc = await _resolve_uk_eu_location(ib, cfg, xml)
+                        if eu_loc is None:
+                            cfg.markets = tuple(m for m in cfg.markets if m is not MarketBucket.UK_EU)
+                        else:
+                            prof = cfg.profiles[MarketBucket.UK_EU]
+                            cfg.profiles[MarketBucket.UK_EU] = replace(prof, location_code=eu_loc)
+                    if MarketBucket.HK in cfg.markets:
+                        hk_loc = await _resolve_hk_location(ib, cfg, xml)
+                        if hk_loc is None:
+                            cfg.markets = tuple(m for m in cfg.markets if m is not MarketBucket.HK)
+                        else:
+                            prof = cfg.profiles[MarketBucket.HK]
+                            cfg.profiles[MarketBucket.HK] = replace(prof, location_code=hk_loc)
+
+                    all_candidates = []
+                    for bucket in cfg.markets:
+                        prof = cfg.profiles[bucket]
+                        cands = await gather_candidates(
+                            ib, prof,
+                            scanner_xml=xml,
+                            top_n_per_scan=cfg.top_candidates_per_scan,
+                            max_candidates=cfg.max_candidates_per_market,
+                        )
+                        all_candidates.extend(cands)
+
+                    # Watchlist additions.
+                    wl_symbols: list[str] = list(cfg.watchlist)
+                    if cfg.watchlist_file is not None:
+                        try:
+                            wl_symbols.extend(load_watchlist(cfg.watchlist_file))
+                        except FileNotFoundError as exc:
+                            log.error("Watchlist file not found: %s", exc)
+                    if wl_symbols:
+                        seen: set[str] = set()
+                        deduped = [s for s in wl_symbols if not (s in seen or seen.add(s))]
+                        extras = await qualify_watchlist(ib, deduped)
+                        existing_ids = {c.con_id for c in all_candidates}
+                        for c in extras:
+                            if c.con_id not in existing_ids:
+                                all_candidates.append(c)
+                                existing_ids.add(c.con_id)
+
+                    # 2) Reconcile subscriptions with the current candidate pool.
+                    added, removed = await session.sync_candidate_pool(
+                        all_candidates,
+                        backfill_seconds=cfg.streaming_backfill_seconds,
+                    )
+                    if added or removed:
+                        log.info(
+                            "Subscription sync: +%d / -%d (active=%d)",
+                            added, removed, len(session.active_con_ids()),
+                        )
+
+                    # 3) Compute metrics from buffers.
+                    rows = []
+                    bar_results_for_snapshot = []
+                    for con_id in session.active_con_ids():
+                        cand = session.get_candidate(con_id)
+                        if cand is None:
+                            continue
+                        bars = session.get_bars(con_id)
+                        if not bars:
+                            continue
+                        row = compute_metrics(
+                            cand,
+                            bars,
+                            min_bars=cfg.min_bars_for_metric,
+                            min_bars_short=cfg.min_bars_short,
+                            score_weights=cfg.score_weights,
+                        )
+                        if row is not None:
+                            row.what_to_show = "TRADES"
+                            rows.append(row)
+                            # Lightweight BarsResult substitute for snapshot save.
+                            from .historical import BarsResult as _BR
+                            bar_results_for_snapshot.append(_BR(candidate=cand, bars=list(bars)))
+
+                    # 4) Snapshot save.
+                    if not no_save_snapshot:
+                        stamp = _dt.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
+                        try:
+                            save_snapshot(
+                                snapshot_dir / stamp,
+                                cfg,
+                                [br.candidate for br in bar_results_for_snapshot],
+                                bar_results_for_snapshot,
+                            )
+                        except Exception as exc:
+                            log.error("Snapshot save failed: %s", exc)
+
+                    # 5) Filter + rank + render.
+                    filtered = filter_rows(rows, cfg.profiles)
+                    if cfg.filter_exprs:
+                        try:
+                            pred = compile_filters(list(cfg.filter_exprs))
+                            filtered = [r for r in filtered if pred(r)]
+                        except FilterParseError as exc:
+                            log.error("Invalid --filter expression: %s", exc)
+                    ranked = rank_rows(filtered, sort_key=cfg.sort_key, top_n=cfg.top_results)
+
+                    _emit_cycle(live, ranked, cfg, rules, alert_state, alerts_log)
+
+                    summary = tracker.summary()
+                    if summary:
+                        console.print(f"[yellow]{summary}[/yellow]")
+
+                    await asyncio.sleep(max(5.0, interval))
+        finally:
+            tracker.detach(ib)
+            await session.close()
+
+
 @app.command()
 def watch(
     interval: float = typer.Option(60.0, "--interval", help="Refresh interval in seconds."),
@@ -710,6 +896,17 @@ def watch(
     filter_exprs: list[str] = typer.Option(
         [], "--filter", help="Composable filter expression (AND-combined)."
     ),
+    no_streaming: bool = typer.Option(
+        False,
+        "--no-streaming",
+        help="Disable the streaming-bars architecture and fall back to "
+        "per-cycle reqHistoricalData. Streaming is the default for watch.",
+    ),
+    streaming_max_subs: int | None = typer.Option(
+        None,
+        "--streaming-max-subs",
+        help="Cap on simultaneous live subscriptions (default 100).",
+    ),
 ) -> None:
     """Re-run the screen every --interval seconds with a live-refreshing table."""
     _configure_logging(verbose, log_file)
@@ -740,6 +937,9 @@ def watch(
         cfg.watchlist_file = watchlist_file
     if filter_exprs:
         cfg.filter_exprs = tuple(filter_exprs)
+    cfg.streaming = not no_streaming
+    if streaming_max_subs is not None:
+        cfg.streaming_max_subscriptions = streaming_max_subs
 
     rules = build_rules_from_kwargs(
         alert_range_pct=alert_range_pct,
@@ -759,41 +959,34 @@ def watch(
             alerts_log,
         )
 
-    async def loop() -> None:
+    async def loop_legacy() -> None:
+        """Per-cycle reqHistoricalData (the pre-v0.6.0 behavior)."""
         from datetime import datetime as _dt
 
         with Live(console=console, refresh_per_second=2) as live:
             while True:
                 if not no_save_snapshot:
-                    # Per-cycle subdirectory; second-resolution so sub-minute
-                    # intervals don't collide.
                     stamp = _dt.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
                     cfg.save_snapshot_dir = snapshot_dir / stamp
                 else:
                     cfg.save_snapshot_dir = None
                 rows = await _run_once(cfg, show_progress=False)
-                alerted_symbols: set[str] = set()
-                if rows and rules:
-                    fired = alert_state.evaluate(rows, rules)
-                    if fired:
-                        write_alerts(alerts_log, fired)
-                        alerted_symbols = {a.symbol for a in fired}
-                if rows:
-                    live.update(
-                        render_table(
-                            rows,
-                            sort_key=cfg.sort_key,
-                            alerted_symbols=alerted_symbols,
-                            console_width=console.size.width,
-                        )
-                    )
-                    _write_outputs(rows, cfg)
-                else:
-                    live.update("[yellow]No rows passed filters this cycle.[/yellow]")
+                _emit_cycle(live, rows, cfg, rules, alert_state, alerts_log)
                 await asyncio.sleep(max(5.0, interval))
 
     try:
-        asyncio.run(loop())
+        if cfg.streaming:
+            asyncio.run(_run_watch_streaming(
+                cfg,
+                interval=interval,
+                snapshot_dir=snapshot_dir,
+                no_save_snapshot=no_save_snapshot,
+                rules=rules,
+                alert_state=alert_state,
+                alerts_log=alerts_log,
+            ))
+        else:
+            asyncio.run(loop_legacy())
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted; exiting watch loop.[/dim]")
 

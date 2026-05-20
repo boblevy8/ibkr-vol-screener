@@ -383,6 +383,17 @@ below 80% of the threshold (hysteresis to avoid spam). Multiple
 ibkr-vol-screener watch --interval 60 --markets us_major,tsx,otc
 ```
 
+**Streaming** is the default — `watch` holds the IB connection open
+and subscribes to `reqRealTimeBars` per candidate. The first time a
+candidate appears it gets a one-shot `reqHistoricalData` backfill;
+after that, the rolling buffer fills from live 5-second bars and no
+further historical fetches are needed. Avoids the per-cycle pacing
+pressure of the legacy approach at high refresh rates.
+
+Pass `--no-streaming` to fall back to the original per-cycle
+`reqHistoricalData` flow. Cap the number of simultaneous subscriptions
+with `--streaming-max-subs N` (default 100).
+
 ### Discover scanner locations / scan codes (helpful for TSX)
 
 ```bash

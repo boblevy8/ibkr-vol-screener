@@ -185,6 +185,11 @@ class Config:
         default_factory=lambda: _default_score_weights()
     )
 
+    # Phase 8: streaming bars for watch mode (default on).
+    streaming: bool = True
+    streaming_max_subscriptions: int = 100
+    streaming_backfill_seconds: int = 4500  # 75 min
+
     # Outputs.
     csv_path: Path | None = None
     json_path: Path | None = None

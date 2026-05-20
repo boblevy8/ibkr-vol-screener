@@ -3,6 +3,42 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] — 2026-05-20
+
+Streaming bars in watch mode.
+
+### Added
+- `streaming.py` module: `BarBuffer` (rolling 5s-bar buffer with
+  on-the-fly 1-min aggregation) and `StreamingSession` (manages
+  per-candidate `reqRealTimeBars` subscriptions over the lifetime
+  of a watch run).
+- **New default for `watch`**: a persistent IB connection holds
+  live `reqRealTimeBars(barSize=5, whatToShow='TRADES')`
+  subscriptions per candidate; each gets one `reqHistoricalData`
+  backfill at first sight. Subsequent cycles read from the buffer,
+  not from IBKR. Caps `reqHistoricalData` calls at 1 per
+  *new* candidate per run (vs ~N per cycle before).
+- `--no-streaming` flag falls back to the legacy per-cycle
+  `reqHistoricalData` watch loop. Useful for replicating earlier
+  behavior or if streaming subscriptions misbehave.
+- `--streaming-max-subs` (default 100) caps simultaneous market-data
+  lines. Adds beyond the cap are logged and skipped.
+
+### Architecture
+- `Config.streaming = True` by default. `Config.streaming_max_subscriptions`
+  and `Config.streaming_backfill_seconds` knobs added.
+- `StreamingSession.sync_candidate_pool(candidates)` reconciles new
+  scanner output with active subscriptions — adds new, drops gone,
+  leaves stable candidates alone.
+- Snapshot saving (auto-on by default) draws from the rolling buffer
+  via `to_1min_bars()` — same shape as legacy snapshots so `replay`,
+  `analyze`, `backtest` all work unchanged.
+- On SIGINT, `StreamingSession.close()` cancels every live
+  subscription before exit.
+
+### Changed
+- `pyproject.toml` bumped to `0.6.0`.
+
 ## [0.5.0] — 2026-05-20
 
 HK/Asia bucket + offline backtest + weight tuning.
