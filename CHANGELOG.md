@@ -3,6 +3,42 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-05-20
+
+Strategy presets + position-sizing trade planner.
+
+### Added
+- **`--strategy NAME` flag** on `once` and `watch` applies a preset
+  bundle of (markets, sort_key, filter expressions, with_gap, per-
+  bucket thresholds). Ships five built-in presets:
+  - `volatile` (composite_score sort)
+  - `gap` (morning gappers, auto-enables `--with-gap`)
+  - `breakout` (high accel_factor)
+  - `reversion` (large move + far-from-VWAP)
+  - `active` (highest $-volume)
+  Explicit per-flag CLI overrides still win (applied after the preset).
+- **`strategies` command** lists the registry with sort keys, filter
+  expressions, and descriptions.
+- **`plan SYMBOL --account-value N` command** computes an ATR-stop
+  trade plan with fixed-fractional position sizing. Read-only:
+  uses `qualifyContracts` + `reqHistoricalData`, never places an
+  order. Outputs entry, stop, target, R-multiple, shares,
+  notional, % of account.
+
+### Math (planner)
+- `stop_distance = atr_multiple × (atr_pct_60m / 100 × last_close)`
+- `risk_dollar = account_value × risk_pct / 100`
+- `position_size = floor(risk_dollar / stop_distance)` shares
+  (always floored, never rounded up — caps actual risk).
+
+### Changed
+- `pyproject.toml` bumped to `0.7.0`.
+
+### Roadmap (still on deck)
+- Persistent SQLite data layer.
+- Context enrichment (sector via reqContractDetails + earnings
+  calendar overlay).
+
 ## [0.6.0] — 2026-05-20
 
 Streaming bars in watch mode.

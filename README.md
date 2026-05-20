@@ -153,6 +153,44 @@ sort keys and filter thresholds without burning the 60-req/10-min pacing
 budget. Accepts most of the same `--sort`, `--min-*`, and output flags
 as `once`.
 
+### Strategy presets (one flag, one setup)
+
+Stop composing `--sort + --filter + --markets + --with-gap` by hand:
+
+```bash
+ibkr-vol-screener once --strategy gap         # morning gappers
+ibkr-vol-screener once --strategy breakout    # 15m acceleration
+ibkr-vol-screener once --strategy reversion   # mean-reversion candidates
+ibkr-vol-screener once --strategy active      # most heavily traded
+ibkr-vol-screener once --strategy volatile    # explicit composite_score
+```
+
+Each preset bundles a markets list, sort key, filter expressions,
+threshold overrides, and (for `gap`) `--with-gap`. Explicit per-flag
+overrides still win — `--strategy gap --markets otc` keeps the gap
+sort but switches the market list.
+
+See `ibkr-vol-screener strategies` for the registry.
+
+### Trade plan: size + entry + stop + target for one symbol
+
+```bash
+ibkr-vol-screener plan SOXS --account-value 50000 --risk-pct 1
+```
+
+Computes an ATR-stop trade plan with fixed-fractional position
+sizing using the symbol's 60-minute ATR. Output: entry, stop,
+target, R-multiple, shares, notional, % of account. Read-only —
+never places an order. Flags:
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--account-value` | required | account value in USD |
+| `--risk-pct` | 1.0 | % of account to risk on the trade |
+| `--side` | `long` | `long` or `short` |
+| `--atr-multiple` | 1.5 | stop distance = N × ATR_60m |
+| `--target-r` | 2.0 | take-profit at N × stop distance |
+
 ### Multi-timeframe acceleration + composite score
 
 Every metric row now carries shorter-window siblings (5m / 15m / 30m)

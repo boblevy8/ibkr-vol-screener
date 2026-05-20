@@ -53,6 +53,7 @@ from .observability import (
     configure_file_logging,
     is_scanner_cancel_receipt,
 )
+from .planner import compute_plan, render_plan_panel
 from .reporting import (
     _VALID_SORT_KEYS,
     filter_rows,
@@ -83,6 +84,7 @@ from .scanner_params import (
 )
 from .scanners import gather_candidates
 from .snapshot import open_for_replay, save_snapshot
+from .strategies import STRATEGY_PRESETS, apply_strategy, list_strategies
 from .streaming import StreamingSession
 from .watchlist import load_watchlist, qualify_watchlist
 
@@ -588,6 +590,14 @@ def once(
         help="Filter expression, e.g. 'range_pct>3 AND volume_60m>500000'. "
         "Pass multiple times to AND-combine.",
     ),
+    strategy: str | None = typer.Option(
+        None,
+        "--strategy",
+        help=(
+            "Preset bundle. Use `ibkr-vol-screener strategies` to list. "
+            "Applied BEFORE explicit per-flag overrides."
+        ),
+    ),
 ) -> None:
     """Run one screen across selected markets and print a ranked table."""
     global console
@@ -623,6 +633,19 @@ def once(
         cfg.watchlist_file = watchlist_file
     if filter_exprs:
         cfg.filter_exprs = tuple(filter_exprs)
+    if strategy is not None:
+        if strategy not in STRATEGY_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown --strategy {strategy!r}. Valid: "
+                f"{', '.join(sorted(STRATEGY_PRESETS))}"
+            )
+        apply_strategy(cfg, strategy)
+        # If user also passed --sort / --markets explicitly, the
+        # explicit CLI flags should win — re-apply them.
+        if markets:
+            cfg.markets = _resolve_markets(markets) or cfg.markets
+        if sort:
+            cfg.sort_key = sort
     if cfg.dry_run:
         import json as _json
 
@@ -907,6 +930,11 @@ def watch(
         "--streaming-max-subs",
         help="Cap on simultaneous live subscriptions (default 100).",
     ),
+    strategy: str | None = typer.Option(
+        None,
+        "--strategy",
+        help="Preset bundle (see `ibkr-vol-screener strategies`).",
+    ),
 ) -> None:
     """Re-run the screen every --interval seconds with a live-refreshing table."""
     _configure_logging(verbose, log_file)
@@ -940,6 +968,17 @@ def watch(
     cfg.streaming = not no_streaming
     if streaming_max_subs is not None:
         cfg.streaming_max_subscriptions = streaming_max_subs
+    if strategy is not None:
+        if strategy not in STRATEGY_PRESETS:
+            raise typer.BadParameter(
+                f"Unknown --strategy {strategy!r}. Valid: "
+                f"{', '.join(sorted(STRATEGY_PRESETS))}"
+            )
+        apply_strategy(cfg, strategy)
+        if markets:
+            cfg.markets = _resolve_markets(markets) or cfg.markets
+        if sort:
+            cfg.sort_key = sort
 
     rules = build_rules_from_kwargs(
         alert_range_pct=alert_range_pct,
@@ -1367,6 +1406,132 @@ def backtest(
 
     if csv_out:
         write_outcomes_csv(report, csv_out)
+
+
+@app.command("strategies")
+def strategies_cmd() -> None:
+    """List the built-in --strategy presets and what they do."""
+    from rich.table import Table
+
+    t = Table(title="Strategy presets", show_lines=True)
+    t.add_column("Name", style="bold cyan", no_wrap=True)
+    t.add_column("Sort", style="bold yellow", no_wrap=True)
+    t.add_column("Markets", no_wrap=True)
+    t.add_column("Filters")
+    t.add_column("Description")
+    for preset in list_strategies():
+        markets = (
+            ",".join(m.value for m in preset.markets) if preset.markets else "—"
+        )
+        t.add_row(
+            preset.name,
+            preset.sort_key or "—",
+            markets,
+            "; ".join(preset.filter_exprs) or "—",
+            preset.description,
+        )
+    console.print(t)
+
+
+@app.command()
+def plan(
+    symbol: str = typer.Argument(..., help="Symbol to plan a trade in."),
+    account_value: float = typer.Option(
+        ..., "--account-value", "-a", help="Account value in USD."
+    ),
+    risk_pct: float = typer.Option(
+        1.0, "--risk-pct", help="Fraction of account to risk (0..100)."
+    ),
+    side: str = typer.Option("long", "--side", help="long | short"),
+    atr_multiple: float = typer.Option(
+        1.5, "--atr-multiple", help="Stop distance = N × ATR_60m."
+    ),
+    target_r: float = typer.Option(
+        2.0, "--target-r", help="Take-profit at N × stop distance."
+    ),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(7497, "--port"),
+    client_id: int = typer.Option(42, "--client-id"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Compute a trade plan for one symbol: entry, stop, target, size.
+
+    Read-only: connects to IB only to fetch 1-min bars; never places
+    or modifies orders. Use the printed plan as input to manual
+    order entry in TWS.
+    """
+    _configure_logging(verbose)
+
+    async def _go() -> None:
+        from ib_async import Stock
+
+        from .scanners import Candidate
+
+        async with ib_session(host, port, client_id) as ib:
+            stock = Stock(symbol.upper(), exchange="SMART", currency="USD")
+            qualified = await ib.qualifyContractsAsync(stock)
+            if not qualified:
+                console.print(
+                    f"[red]Could not resolve symbol {symbol!r}. "
+                    f"Is it tradeable on SMART/USD?[/red]"
+                )
+                raise typer.Exit(code=1)
+            contract = qualified[0]
+            log.info(
+                "Resolved %s -> conId=%s primaryExchange=%s",
+                contract.symbol,
+                contract.conId,
+                getattr(contract, "primaryExchange", ""),
+            )
+            bars = await ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime="",
+                durationStr="5400 S",
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=False,
+                formatDate=2,
+            )
+            if not bars:
+                console.print(
+                    f"[red]No bars returned for {symbol}. "
+                    f"Market may be closed or symbol illiquid.[/red]"
+                )
+                raise typer.Exit(code=1)
+            cand = Candidate(
+                con_id=int(contract.conId),
+                symbol=contract.symbol,
+                exchange=getattr(contract, "exchange", "SMART") or "SMART",
+                primary_exchange=getattr(contract, "primaryExchange", "") or "",
+                currency=getattr(contract, "currency", "USD") or "USD",
+                bucket=MarketBucket.US_MAJOR,
+                source_scan_codes={"PLAN"},
+            )
+            row = compute_metrics(cand, bars, min_bars=10)
+            if row is None:
+                console.print(
+                    "[red]Insufficient bars to compute metrics; "
+                    "cannot build a plan.[/red]"
+                )
+                raise typer.Exit(code=1)
+
+        try:
+            tp = compute_plan(
+                row,
+                account_value=account_value,
+                risk_pct=risk_pct,
+                side=side,
+                atr_multiple=atr_multiple,
+                target_r=target_r,
+            )
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from None
+        console.print(render_plan_panel(tp))
+        console.print(
+            "[dim]This is a plan, not an order. Place manually in TWS.[/dim]"
+        )
+
+    asyncio.run(_go())
 
 
 def main() -> None:  # pragma: no cover - convenience entrypoint

@@ -8,4 +8,4 @@ By design, this package never imports or calls any order-placement endpoint.
 See tests/test_readonly.py for the AST-level invariant check.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
