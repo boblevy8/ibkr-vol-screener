@@ -3,6 +3,33 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-05-20
+
+HK/Asia bucket + offline backtest + weight tuning.
+
+### Added
+- **`MarketBucket.HK`** — fifth market bucket. Opt-in via
+  `--markets hk`. Live-confirmed location codes: `STK.HK.SEHK`
+  (Hong Kong, default), `STK.HK.TSE_JPN` (Japan), `STK.HK.SEHKNTL`
+  (Shanghai-HK Connect), `STK.HK.SEHKSTAR`, `STK.HK` (catch-all).
+  Same runtime-discovery + probe + cache pattern as TSX / UK-EU.
+- **`backtest <snapshots-dir>` command** — offline-only. Walks
+  consecutive snapshot pairs (T_n, T_n+1), measures each symbol's
+  forward outcome using T_n+1's bars, and reports:
+  1. Run overview (pairs + outcomes).
+  2. Per-metric Spearman correlation with the forward target.
+  3. Top-K-by-composite-score performance vs the full-universe
+     baseline (mean / median / win-rate lift).
+- **`--tune-weights`** suggests a `[score] weights = { ... }` TOML
+  block whose values are proportional to each metric's
+  `|Spearman correlation|` against the chosen target. Comments warn
+  about small-sample overfitting.
+- Pure-stdlib Spearman implementation with average-rank tie
+  handling (matches scipy's convention).
+
+### Changed
+- `pyproject.toml` bumped to `0.5.0`.
+
 ## [0.4.0] — 2026-05-19
 
 Multi-timeframe windows + composite score.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ibkr_vol_screener.scanner_params import (
+    discover_hk_location,
     discover_tsx_location,
     discover_uk_eu_location,
     has_location,
@@ -68,3 +69,15 @@ def test_discover_uk_eu_prefers_lse_country_specific(fixtures_dir):
 def test_discover_uk_eu_returns_none_when_absent(fixtures_dir):
     xml = (fixtures_dir / "scanner_params_no_tsx.xml").read_text(encoding="utf-8")
     assert discover_uk_eu_location(xml) is None
+
+
+def test_discover_hk_prefers_sehk_main_board(fixtures_dir):
+    """STK.HK.SEHK (Hong Kong main board) is highest priority — picked
+    over the broad STK.HK catch-all and STK.HK.TSE_JPN."""
+    xml = (fixtures_dir / "scanner_params_sample.xml").read_text(encoding="utf-8")
+    assert discover_hk_location(xml) == "STK.HK.SEHK"
+
+
+def test_discover_hk_returns_none_when_absent(fixtures_dir):
+    xml = (fixtures_dir / "scanner_params_no_tsx.xml").read_text(encoding="utf-8")
+    assert discover_hk_location(xml) is None

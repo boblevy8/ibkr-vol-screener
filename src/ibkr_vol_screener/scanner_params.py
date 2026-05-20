@@ -53,6 +53,19 @@ _UK_EU_CANDIDATES_PRIORITY = (
 )
 _UK_EU_KEYWORDS = ("EU", "LSE", "LONDON", "FRANKFURT", "IBIS", "XETRA", "EUREX")
 
+# Priority list for HK/Asia location codes.
+# Confirmed against live scanner XML (2026-05-19): STK.HK.SEHK (Hong Kong),
+# STK.HK.TSE_JPN (Japan), STK.HK.SEHKNTL (Shanghai-HK Connect),
+# STK.HK.SEHKSTAR. Order chosen by typical liquidity (SEHK first).
+_HK_CANDIDATES_PRIORITY = (
+    "STK.HK.SEHK",
+    "STK.HK.TSE_JPN",
+    "STK.HK.SEHKNTL",
+    "STK.HK.SEHKSTAR",
+    "STK.HK",
+)
+_HK_KEYWORDS = ("HK", "HONG KONG", "SEHK", "TSE_JPN", "JAPAN")
+
 
 @dataclass(frozen=True)
 class Location:
@@ -318,6 +331,68 @@ def read_cached_uk_eu(cache_dir: Path) -> str | None:
 def write_cached_uk_eu(code: str, cache_dir: Path) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached_uk_eu_location_path(cache_dir).write_text(code, encoding="utf-8")
+
+
+def discover_hk_location(xml: str) -> str | None:
+    """Like `discover_tsx_location` but for the HK/Asia bucket."""
+    locs = {loc.code for loc in parse_locations(xml)}
+    for candidate in _HK_CANDIDATES_PRIORITY:
+        if candidate in locs:
+            log.info("HK location discovered from XML: %s", candidate)
+            return candidate
+    for code in sorted(locs):
+        upper = code.upper()
+        if any(kw in upper for kw in _HK_KEYWORDS):
+            log.info("HK location discovered from XML (keyword match): %s", code)
+            return code
+    log.warning("No HK/Asia location code found in scanner XML.")
+    return None
+
+
+async def probe_hk_location(ib: IB, xml: str | None = None) -> str | None:
+    """Best-effort runtime probe for an HK/Asia location code."""
+    from ib_async import ScannerSubscription
+
+    candidates = list(_HK_CANDIDATES_PRIORITY)
+    if xml:
+        xml_locs = {loc.code for loc in parse_locations(xml)}
+        candidates = [c for c in candidates if c in xml_locs] + [
+            c for c in candidates if c not in xml_locs
+        ]
+    for candidate in candidates:
+        sub = ScannerSubscription(
+            instrument="STK",
+            locationCode=candidate,
+            scanCode="MOST_ACTIVE",
+            numberOfRows=1,
+        )
+        try:
+            data = await ib.reqScannerDataAsync(sub, [], [])
+        except Exception as exc:
+            log.debug("HK probe failed for %s: %s", candidate, exc)
+            continue
+        if data:
+            log.info("HK location confirmed via live probe: %s", candidate)
+            return candidate
+        log.debug("HK probe returned no rows for %s", candidate)
+    log.warning("All HK location probes failed; skipping HK bucket.")
+    return None
+
+
+def cached_hk_location_path(cache_dir: Path) -> Path:
+    return cache_dir / "hk_location.txt"
+
+
+def read_cached_hk(cache_dir: Path) -> str | None:
+    p = cached_hk_location_path(cache_dir)
+    if not p.exists():
+        return None
+    return p.read_text(encoding="utf-8").strip() or None
+
+
+def write_cached_hk(code: str, cache_dir: Path) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_hk_location_path(cache_dir).write_text(code, encoding="utf-8")
 
 
 def render_stock_scanner_info_text(xml: str) -> str:

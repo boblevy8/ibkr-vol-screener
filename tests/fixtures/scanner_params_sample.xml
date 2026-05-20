@@ -44,6 +44,21 @@
       </Instruments>
     </Location>
     <Location>
+      <locationCode>STK.HK.SEHK</locationCode>
+      <displayName>Hong Kong (SEHK)</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.HK.TSE_JPN</locationCode>
+      <displayName>Japan (TSEJ)</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </Location>
+    <Location>
+      <locationCode>STK.HK</locationCode>
+      <displayName>Asia Stocks</displayName>
+      <Instruments><Instrument>STK</Instrument></Instruments>
+    </Location>
+    <Location>
       <locationCode>FUT.US</locationCode>
       <displayName>US Futures</displayName>
       <Instruments>

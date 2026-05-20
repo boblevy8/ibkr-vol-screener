@@ -34,6 +34,7 @@ from .analytics import (
     scan_code_predictiveness,
     write_long_form_csv,
 )
+from .backtest import format_weight_toml, run_backtest, write_outcomes_csv
 from .charts import MatplotlibMissing, plot_metric_history, plot_snapshot_grid, save_figure
 from .config import (
     Config,
@@ -63,16 +64,20 @@ from .reporting import (
 )
 from .scanner_params import (
     cached_tsx_location_path,
+    discover_hk_location,
     discover_tsx_location,
     discover_uk_eu_location,
     fetch_scanner_xml,
     print_stock_scanner_info,
+    probe_hk_location,
     probe_tsx_location,
     probe_uk_eu_location,
     read_cache,
+    read_cached_hk,
     read_cached_tsx,
     read_cached_uk_eu,
     write_cache,
+    write_cached_hk,
     write_cached_tsx,
     write_cached_uk_eu,
 )
@@ -279,6 +284,25 @@ async def _resolve_uk_eu_location(ib, cfg: Config, xml: str) -> str | None:
     return None
 
 
+async def _resolve_hk_location(ib, cfg: Config, xml: str) -> str | None:
+    profile = cfg.profiles[MarketBucket.HK]
+    if profile.location_code:
+        return profile.location_code
+    cached = read_cached_hk(cfg.cache_dir)
+    if cached:
+        log.info("Using cached HK location: %s", cached)
+        return cached
+    code = discover_hk_location(xml)
+    if code:
+        write_cached_hk(code, cfg.cache_dir)
+        return code
+    code = await probe_hk_location(ib, xml)
+    if code:
+        write_cached_hk(code, cfg.cache_dir)
+        return code
+    return None
+
+
 async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
     """Connect, scan, fetch bars, compute, filter, rank. Returns ranked rows."""
     from rich.progress import (
@@ -320,6 +344,16 @@ async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
                 else:
                     prof = cfg.profiles[MarketBucket.UK_EU]
                     cfg.profiles[MarketBucket.UK_EU] = replace(prof, location_code=eu_loc)
+
+            # Resolve HK if needed.
+            if MarketBucket.HK in cfg.markets:
+                hk_loc = await _resolve_hk_location(ib, cfg, xml)
+                if hk_loc is None:
+                    log.warning("No HK/Asia location resolved; dropping HK bucket for this run.")
+                    cfg.markets = tuple(m for m in cfg.markets if m is not MarketBucket.HK)
+                else:
+                    prof = cfg.profiles[MarketBucket.HK]
+                    cfg.profiles[MarketBucket.HK] = replace(prof, location_code=hk_loc)
 
             # Candidate generation.
             all_candidates = []
@@ -1026,6 +1060,120 @@ def chart(
             plt.show()
         except Exception as exc:
             log.warning("Could not open interactive viewer: %s", exc)
+
+
+@app.command()
+def backtest(
+    root: Path = typer.Argument(..., help="Snapshots root (e.g. ./snapshots)."),
+    k: int = typer.Option(10, "--top-k"),
+    target: str = typer.Option(
+        "forward_range_pct",
+        "--target",
+        help="What to predict: forward_range_pct (default, captures absolute "
+        "movement) or forward_return_pct (signed direction).",
+    ),
+    tune_weights: bool = typer.Option(
+        False,
+        "--tune-weights",
+        help="Print a [score] weights TOML block from per-metric correlations.",
+    ),
+    csv_out: Path | None = typer.Option(None, "--csv"),
+    width: int | None = typer.Option(None, "--width"),
+    verbose: bool = typer.Option(False, "--verbose"),
+) -> None:
+    """Walk saved snapshot pairs and report what composite_score actually predicted.
+
+    Offline-only: no IBKR connection. Requires at least two snapshots in `root`.
+    """
+    if target not in ("forward_range_pct", "forward_return_pct"):
+        raise typer.BadParameter(
+            f"--target must be forward_range_pct or forward_return_pct (got {target!r})"
+        )
+    global console
+    resolved_width = _resolve_width(width)
+    if resolved_width is not None:
+        console = _make_console(resolved_width)
+    _configure_logging(verbose)
+
+    report = run_backtest(root, k=k, target=target, tune_weights=tune_weights)
+    if not report.outcomes:
+        console.print(
+            f"[yellow]No backtest data: need >= 2 snapshots under {root} "
+            f"with overlapping symbols.[/yellow]"
+        )
+        return
+
+    from rich.table import Table
+
+    # 1. Overview
+    overview = Table(title="Backtest overview", show_lines=False)
+    overview.add_column("Field", style="bold")
+    overview.add_column("Value")
+    overview.add_row("Snapshot pairs", str(report.pairs))
+    overview.add_row("Forward outcomes", str(len(report.outcomes)))
+    overview.add_row("Target", report.target)
+    console.print(overview)
+
+    # 2. Per-metric correlation
+    corr_tbl = Table(
+        title=f"Per-metric Spearman correlation with {report.target}",
+        show_lines=False,
+    )
+    corr_tbl.add_column("Metric", style="bold cyan")
+    corr_tbl.add_column("Spearman", justify="right")
+    corr_tbl.add_column("|Spearman|", justify="right", style="bold yellow")
+    corr_tbl.add_column("N", justify="right")
+    for c in report.correlations:
+        rho_style = "green" if c.spearman > 0 else ("red" if c.spearman < 0 else "dim")
+        corr_tbl.add_row(
+            c.metric,
+            f"[{rho_style}]{c.spearman:+.4f}[/{rho_style}]",
+            f"{c.spearman_abs:.4f}",
+            str(c.n),
+        )
+    console.print(corr_tbl)
+
+    # 3. Top-K vs baseline
+    if report.top_k_summary is not None:
+        s = report.top_k_summary
+        tk = Table(
+            title=f"Top-{s.k} by composite_score vs baseline",
+            show_lines=False,
+        )
+        tk.add_column("Stat", style="bold")
+        tk.add_column(f"Top-{s.k}", justify="right", style="bold green")
+        tk.add_column("Baseline (all)", justify="right")
+        tk.add_column("Lift", justify="right", style="bold yellow")
+        tk.add_row(
+            "Mean",
+            f"{s.topk_mean:+.4f}",
+            f"{s.baseline_mean:+.4f}",
+            f"{s.mean_lift:+.4f}",
+        )
+        tk.add_row(
+            "Median",
+            f"{s.topk_median:+.4f}",
+            f"{s.baseline_median:+.4f}",
+            f"{s.topk_median - s.baseline_median:+.4f}",
+        )
+        tk.add_row(
+            "Win rate",
+            f"{s.topk_win_rate:.0%}",
+            f"{s.baseline_win_rate:.0%}",
+            f"{(s.topk_win_rate - s.baseline_win_rate):+.0%}",
+        )
+        console.print(tk)
+
+    # 4. Suggested weights
+    if report.suggested_weights is not None:
+        toml_block = format_weight_toml(report.suggested_weights, len(report.outcomes))
+        console.print("\n[bold]Suggested score weights (paste into config TOML):[/bold]")
+        typer.echo(toml_block)
+    elif tune_weights:
+        console.print("[yellow]No usable signal in correlations; weights not tuned.[/yellow]")
+
+    if csv_out:
+        write_outcomes_csv(report, csv_out)
 
 
 def main() -> None:  # pragma: no cover - convenience entrypoint

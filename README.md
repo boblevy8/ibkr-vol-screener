@@ -214,6 +214,67 @@ ibkr-vol-screener once --no-progress --width 200 > screen.txt
 `--no-progress` skips the live spinner during the historical-bar
 fetch. The INFO log lines remain so the run is still observable.
 
+### Backtest: did composite_score actually predict anything?
+
+Once you've accumulated some watch-mode history under `./snapshots/`,
+run an offline backtest that walks every consecutive snapshot pair
+and uses the next snapshot's bars as the "forward outcome" of the
+previous snapshot's prediction.
+
+```bash
+ibkr-vol-screener backtest ./snapshots/ \
+  --target forward_range_pct \
+  --top-k 10
+```
+
+You'll get three tables:
+
+1. **Per-metric correlation** — Spearman correlation between each
+   tunable metric (range_pct, atr_pct_60m, vwap_dev_abs,
+   accel_factor, realized_vol_60m) and the forward outcome.
+2. **Top-K vs baseline** — how the top-10-by-composite-score
+   actually performed (mean / median / win-rate) vs the full
+   candidate universe.
+3. *(optional)* **Suggested weights** with `--tune-weights`:
+
+```bash
+ibkr-vol-screener backtest ./snapshots/ --tune-weights
+```
+
+prints a paste-ready TOML block:
+
+```toml
+# Suggested by `backtest --tune-weights`.
+# Derived from 84 forward outcomes. Review before committing;
+# small sample sizes overfit easily.
+[score]
+weights = {
+    range_pct = 0.3421,
+    atr_pct_60m = 0.2102,
+    ...
+}
+```
+
+The math is naive on purpose: weights are proportional to
+`|Spearman|` and normalized to sum to 1.0. It's a starting point,
+not a model — the suggestion comments out a sample-size warning so
+you don't trust two snapshots' worth of data.
+
+### HK / Asia bucket
+
+```bash
+ibkr-vol-screener once --markets us_major,hk --top-results 20
+```
+
+`hk` is opt-in (not in the default 3-bucket set). Defaults to
+`STK.HK.SEHK` (Hong Kong main board); override via
+`[profile.hk] location_code = "STK.HK.TSE_JPN"` (Japan) or
+`"STK.HK.SEHKNTL"` (Shanghai-HK connect) in the config.
+
+Note: paper accounts typically lack HK scanner subscriptions, so
+the bucket may gracefully drop with a clear log message — same UX
+as the UK/EU bucket.
+
 ### Watchlist: track your own symbols alongside scanners
 
 Create a file with one symbol per line (`#` comments and blank lines

@@ -26,6 +26,7 @@ class MarketBucket(enum.StrEnum):
     TSX = "tsx"
     OTC = "otc"
     UK_EU = "uk_eu"
+    HK = "hk"
 
 
 # Default scan codes per market. These are validated against the live scanner
@@ -51,6 +52,12 @@ _DEFAULT_TSX_SCANS = (
     "MOST_ACTIVE",
 )
 _DEFAULT_UK_EU_SCANS = (
+    "HOT_BY_VOLUME",
+    "TOP_PERC_GAIN",
+    "TOP_PERC_LOSE",
+    "MOST_ACTIVE",
+)
+_DEFAULT_HK_SCANS = (
     "HOT_BY_VOLUME",
     "TOP_PERC_GAIN",
     "TOP_PERC_LOSE",
@@ -99,11 +106,21 @@ def default_profile(bucket: MarketBucket) -> MarketProfile:
             min_volume_60m=50_000,
             min_dollar_volume_60m=100_000,
         )
-    # UK_EU: location_code resolved at runtime; thresholds in local currency.
+    if bucket is MarketBucket.UK_EU:
+        # location_code resolved at runtime; thresholds in local currency.
+        return MarketProfile(
+            bucket=bucket,
+            location_code=None,
+            scan_codes=_DEFAULT_UK_EU_SCANS,
+            min_price=1.0,
+            min_volume_60m=20_000,
+            min_dollar_volume_60m=50_000,
+        )
+    # HK: location_code resolved at runtime; thresholds in HKD by default.
     return MarketProfile(
         bucket=bucket,
         location_code=None,
-        scan_codes=_DEFAULT_UK_EU_SCANS,
+        scan_codes=_DEFAULT_HK_SCANS,
         min_price=1.0,
         min_volume_60m=20_000,
         min_dollar_volume_60m=50_000,
