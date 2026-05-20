@@ -45,6 +45,24 @@ _ALLOWED_METRICS: frozenset[str] = frozenset(
         "high_60m",
         "low_60m",
         "n_bars",
+        # Phase 6 additions:
+        "composite_score",
+        "accel_factor",
+        "range_pct_5m",
+        "range_pct_15m",
+        "range_pct_30m",
+        "atr_pct_5m",
+        "atr_pct_15m",
+        "atr_pct_30m",
+        "realized_vol_5m",
+        "realized_vol_15m",
+        "realized_vol_30m",
+        "vwap_dev_pct_5m",
+        "vwap_dev_pct_15m",
+        "vwap_dev_pct_30m",
+        "signed_return_pct_5m",
+        "signed_return_pct_15m",
+        "signed_return_pct_30m",
     }
 )
 

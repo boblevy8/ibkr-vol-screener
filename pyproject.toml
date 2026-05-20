@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ibkr-vol-screener"
-version = "0.3.0"
+version = "0.4.0"
 description = "Read-only IBKR TWS API screener for the most volatile stocks over the last 60 minutes (US major / TSX / OTC)."
 readme = "README.md"
 requires-python = ">=3.11"

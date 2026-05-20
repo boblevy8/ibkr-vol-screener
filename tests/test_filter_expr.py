@@ -145,6 +145,19 @@ def test_negative_values():
     assert not pred(_row(signed_return_pct=1.0))
 
 
+def test_accel_factor_filter():
+    pred = parse_filter("accel_factor > 1.5 AND range_pct > 2")
+    assert pred(_row(accel_factor=2.0, range_pct=5.0))
+    assert not pred(_row(accel_factor=0.5, range_pct=5.0))
+    assert not pred(_row(accel_factor=2.0, range_pct=1.0))
+
+
+def test_composite_score_filter():
+    pred = parse_filter("composite_score > 5")
+    assert pred(_row(composite_score=10.0))
+    assert not pred(_row(composite_score=2.0))
+
+
 def test_chained_and_three_terms():
     pred = parse_filter(
         "range_pct > 3 AND atr_pct_60m > 2 AND volume_60m > 100000"

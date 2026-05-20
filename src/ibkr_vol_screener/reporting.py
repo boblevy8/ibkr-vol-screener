@@ -23,6 +23,21 @@ _VALID_SORT_KEYS = (
     "vwap_dev_pct",
     "atr_pct_60m",
     "gap_pct",
+    # Phase 6 additions:
+    "composite_score",
+    "accel_factor",
+    "range_pct_5m",
+    "range_pct_15m",
+    "range_pct_30m",
+    "atr_pct_5m",
+    "atr_pct_15m",
+    "atr_pct_30m",
+    "realized_vol_5m",
+    "realized_vol_15m",
+    "realized_vol_30m",
+    "vwap_dev_pct_5m",
+    "vwap_dev_pct_15m",
+    "vwap_dev_pct_30m",
 )
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
@@ -124,9 +139,12 @@ def rank_rows(
 # Column priority tiers for responsive rendering. Lower tier = more important.
 # Each entry: (name, header_label, min_width_to_include).
 # P0 columns always render; widths below 80 still show P0 but may overflow.
-_COLUMNS_P0 = ("idx", "sym", "bkt", "px", "range_pct", "signed_pct", "spark", "bars")
-_COLUMNS_P1 = ("abs_pct", "atr_pct")
-_COLUMNS_P2 = ("rvol", "vwap_dev")
+# Score is P0 because it's the canonical "is this interesting?" signal.
+_COLUMNS_P0 = (
+    "idx", "sym", "bkt", "px", "range_pct", "signed_pct", "spark", "score", "bars"
+)
+_COLUMNS_P1 = ("abs_pct", "atr_pct", "accel")
+_COLUMNS_P2 = ("rvol", "vwap_dev", "r15")
 _COLUMNS_P3 = ("gap_pct", "vol60", "dvol60")
 _COLUMNS_P4 = ("scans",)
 
@@ -188,11 +206,17 @@ def render_table(
         ),
         "signed_pct": ("Sgn%", {"justify": "right", "no_wrap": True}),
         "spark": ("60m", {"justify": "left", "no_wrap": True}),
+        "score": (
+            "Score",
+            {"justify": "right", "style": "bold blue", "no_wrap": True},
+        ),
         "bars": ("Bars", {"justify": "right", "no_wrap": True}),
         "abs_pct": ("|d|%", {"justify": "right", "no_wrap": True}),
         "atr_pct": ("ATR%", {"justify": "right", "no_wrap": True}),
+        "accel": ("Accel", {"justify": "right", "no_wrap": True}),
         "rvol": ("RVol%", {"justify": "right", "no_wrap": True}),
         "vwap_dev": ("VWdev%", {"justify": "right", "no_wrap": True}),
+        "r15": ("R15%", {"justify": "right", "no_wrap": True}),
         "gap_pct": ("Gap%", {"justify": "right", "no_wrap": True}),
         "vol60": ("Vol60", {"justify": "right", "no_wrap": True}),
         "dvol60": ("$Vol60", {"justify": "right", "no_wrap": True}),
@@ -212,6 +236,7 @@ def render_table(
             gap_style = "green" if r.gap_pct >= 0 else "red"
             gap_text = f"[{gap_style}]{r.gap_pct:+.2f}[/{gap_style}]"
 
+        accel_style = "green" if r.accel_factor > 1.0 else "dim"
         cell_by_col = {
             "idx": str(i),
             "sym": r.symbol,
@@ -220,11 +245,14 @@ def render_table(
             "range_pct": f"{r.range_pct:.2f}",
             "signed_pct": f"[{signed_style}]{r.signed_return_pct:+.2f}[/{signed_style}]",
             "spark": sparkline(r.closes_60m, width=10),
+            "score": f"{r.composite_score:.2f}",
             "bars": str(r.n_bars),
             "abs_pct": f"{r.abs_return_pct:.2f}",
             "atr_pct": f"{r.atr_pct_60m:.2f}",
+            "accel": f"[{accel_style}]{r.accel_factor:.2f}x[/{accel_style}]",
             "rvol": f"{r.realized_vol_60m:.0f}",
             "vwap_dev": f"[{vw_style}]{r.vwap_dev_pct:+.2f}[/{vw_style}]",
+            "r15": f"{r.range_pct_15m:.2f}",
             "gap_pct": gap_text,
             "vol60": f"{r.volume_60m:,.0f}",
             "dvol60": f"{r.dollar_volume_60m:,.0f}",

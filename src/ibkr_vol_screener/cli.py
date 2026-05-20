@@ -449,7 +449,9 @@ async def _run_once(cfg: Config, *, show_progress: bool = True) -> list:
             br.candidate,
             br.bars,
             min_bars=cfg.min_bars_for_metric,
+            min_bars_short=cfg.min_bars_short,
             prior_close=prior_closes.get(br.candidate.con_id),
+            score_weights=cfg.score_weights,
         )
         if row is not None:
             row.what_to_show = br.what_to_show
@@ -871,7 +873,9 @@ def replay(
             cand,
             bars,
             min_bars=cfg.min_bars_for_metric,
+            min_bars_short=cfg.min_bars_short,
             prior_close=inputs.prior_closes.get(cand.con_id),
+            score_weights=cfg.score_weights,
         )
         if row is not None:
             row.what_to_show = inputs.what_to_show_by_conid.get(cand.con_id, "TRADES")

@@ -99,6 +99,31 @@ def test_schema_constant_is_one():
     assert SCHEMA_VERSION == 1
 
 
+def test_replay_v030_snapshot_still_works(tmp_path: Path):
+    """Phase 6 added 15m/30m/5m fields. Old snapshots (saved before they
+    existed) should still load, because the values come from bars/* JSON
+    and metrics are recomputed from those bars at replay time. The fields
+    populate naturally from the recomputed metrics."""
+    now = datetime(2026, 5, 19, 16, 0, tzinfo=UTC)
+    cand = _cand(99, "OLD")
+    bars = make_bars(now - timedelta(minutes=60), count=60, open_=100.0, step_pct=0.05)
+    save_snapshot(tmp_path / "v030", Config(), [cand], [BarsResult(cand, bars=bars)], None)
+
+    loaded = load_snapshot(tmp_path / "v030")
+    # Recompute via the new compute_metrics; sub-windows should populate.
+    row = compute_metrics(
+        loaded.candidates[0],
+        loaded.bars_by_conid[99],
+        min_bars=10,
+        min_bars_short=3,
+        now=now,
+    )
+    assert row is not None
+    assert row.range_pct > 0
+    assert row.range_pct_15m > 0  # Phase 6 field, populated from old bars
+    assert row.composite_score > 0
+
+
 def test_save_with_no_prior_closes_omits_file(tmp_path: Path):
     now = datetime(2026, 5, 19, 16, 0, tzinfo=UTC)
     cand = _cand(7, "ZZZ")

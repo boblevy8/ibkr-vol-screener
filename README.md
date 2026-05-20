@@ -153,6 +153,40 @@ sort keys and filter thresholds without burning the 60-req/10-min pacing
 budget. Accepts most of the same `--sort`, `--min-*`, and output flags
 as `once`.
 
+### Multi-timeframe acceleration + composite score
+
+Every metric row now carries shorter-window siblings (5m / 15m / 30m)
+in addition to the canonical 60m values, plus two derived numbers:
+
+- **`accel_factor`** = `range_pct_15m / range_pct_60m`. Values > 1
+  mean the most recent 15 minutes contained more swing than the
+  hour's flat-distribution baseline; a clean signal that a name is
+  *heating up right now*.
+- **`composite_score`** — a weighted, clipped blend of
+  `range_pct`, `atr_pct_60m`, `|vwap_dev_pct|`, `accel_factor`,
+  and `realized_vol_60m`. Defaults sum to 1.0; tune via TOML:
+
+  ```toml
+  [score]
+  weights = { range_pct = 0.3, atr_pct_60m = 0.2,
+              vwap_dev_abs = 0.15, accel_factor = 0.25,
+              realized_vol_60m = 0.1 }
+  ```
+
+Both fields are sortable, filterable, and rendered in the live
+table when there's space (`Score` always, `Accel` at width ≥ 100,
+`R15%` at width ≥ 120). The full 5m / 15m / 30m breakdown is
+written to CSV / JSON exports.
+
+```bash
+# Sort by composite score
+ibkr-vol-screener once --sort composite_score --top-results 20
+
+# Surface names whose last 15m is accelerating
+ibkr-vol-screener once --sort accel_factor \
+  --filter 'accel_factor > 1 AND range_pct > 1'
+```
+
 ### Narrow terminals
 
 The Rich table auto-resizes for your terminal: low-priority columns

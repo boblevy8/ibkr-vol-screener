@@ -3,6 +3,46 @@
 All notable changes to `ibkr-vol-screener` are recorded here. The format is
 loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] — 2026-05-19
+
+Multi-timeframe windows + composite score.
+
+### Added
+- Per-window metric fields on `ScreenRow` for 5m / 15m / 30m
+  alongside the existing 60m view: `range_pct_*`, `atr_pct_*`,
+  `realized_vol_*`, `vwap_dev_pct_*`, `signed_return_pct_*`
+  (15 new fields total).
+- `accel_factor` = `range_pct_15m / range_pct_60m`. Lights up names
+  whose recent 15 minutes did most of the hour's work. Values > 1
+  indicate the last 15 minutes are outpacing the full-hour average.
+- `composite_score` field — configurable weighted blend of
+  `range_pct`, `atr_pct_60m`, `|vwap_dev_pct|`, `accel_factor`,
+  `realized_vol_60m`, with per-component clipping so a single
+  pathological value can't dominate. Default weights:
+  `range_pct=0.30, atr_pct_60m=0.20, vwap_dev_abs=0.15,
+  accel_factor=0.25, realized_vol_60m=0.10`.
+- TOML config: new `[score] weights = { ... }` table. Unknown keys
+  logged + ignored; missing keys keep defaults.
+- New table columns: `Score` (P0, always shown), `Accel` (P1, width
+  ≥ 100; green when > 1.0), `R15%` (P2, width ≥ 120). CSV/JSON
+  exports include the full multi-timeframe field set.
+- New sort keys: `composite_score`, `accel_factor`, plus every
+  windowed field. All also accepted by `--filter` expressions.
+
+### Changed
+- `compute_metrics` refactored around a `_WindowMetrics` helper so
+  every window shares the same metric pipeline. `slice_last_60min`
+  preserved as a thin shim for back-compat.
+- Default `--sort` stays `range_pct`; `--sort composite_score` is
+  opt-in.
+- `pyproject.toml` bumped to `0.4.0`.
+
+### Backwards compatibility
+- All existing `ScreenRow` fields preserved. New fields default to
+  0.0 / `composite_score=0.0` so snapshots saved on v0.3.0 still
+  load — replay recomputes the new metrics from the saved bars so
+  old snapshots gain acceleration signals "for free".
+
 ## [0.3.0] — 2026-05-19
 
 Charts, watchlist, and composable filters.

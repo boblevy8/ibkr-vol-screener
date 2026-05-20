@@ -161,6 +161,13 @@ class Config:
     watchlist_file: Path | None = None  # alternative: path to a file
     filter_exprs: tuple[str, ...] = ()  # raw --filter expressions (AND-combined)
 
+    # Phase 6: multi-timeframe + composite score.
+    window_minutes: tuple[int, ...] = (60, 30, 15, 5)
+    min_bars_short: int = 3
+    score_weights: dict[str, float] = field(
+        default_factory=lambda: _default_score_weights()
+    )
+
     # Outputs.
     csv_path: Path | None = None
     json_path: Path | None = None
@@ -175,6 +182,13 @@ class Config:
 
 def _default_cache_dir() -> Path:
     return Path.home() / ".cache" / "ibkr_vol_screener"
+
+
+def _default_score_weights() -> dict[str, float]:
+    # Late-imported to avoid a circular dep: metrics.py imports config.py.
+    from .metrics import DEFAULT_SCORE_WEIGHTS
+
+    return dict(DEFAULT_SCORE_WEIGHTS)
 
 
 def _coerce_markets(value: Any) -> tuple[MarketBucket, ...]:
@@ -238,6 +252,18 @@ def load_config(path: Path | None = None) -> Config:
         cfg.watchlist = tuple(str(s).upper() for s in screen["watchlist"])
     if "watchlist_file" in screen:
         cfg.watchlist_file = Path(str(screen["watchlist_file"]))
+
+    # Score weights override.
+    score = data.get("score", {})
+    if isinstance(score, dict):
+        weights_in = score.get("weights")
+        if isinstance(weights_in, dict):
+            valid_keys = set(cfg.score_weights)
+            for k, v in weights_in.items():
+                if k not in valid_keys:
+                    log.warning("Ignoring unknown score weight %r", k)
+                    continue
+                cfg.score_weights[k] = float(v)
 
     # Optional per-market profile overrides.
     for bucket in MarketBucket:
